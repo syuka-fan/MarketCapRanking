@@ -11,6 +11,7 @@ import json
 import re
 import time
 from datetime import UTC, date, datetime
+from decimal import ROUND_HALF_UP, localcontext
 from pathlib import Path
 
 import httpx
@@ -19,10 +20,34 @@ from curl_cffi import requests
 
 from marketcap.calendar import NEW_YORK, latest_completed, sessions
 from marketcap.models import DataError, Settings, positive
+from marketcap.providers.supplements import etf_units, fetch_supplements, kis_rows
 from marketcap.storage import Store, atomic_json
 
-EXCHANGES = {"NMS": "XNAS", "NGM": "XNAS", "NCM": "XNAS", "NYQ": "XNYS", "ASE": "XASE"}
-METHOD = "yahoo_company_market_cap_at_regular_close_v1"
+EXCHANGES = {
+    "NMS": "XNAS",
+    "NGM": "XNAS",
+    "NCM": "XNAS",
+    "NYQ": "XNYS",
+    "ASE": "XASE",
+    "PCX": "ARCX",
+    "BTS": "BATS",
+}
+METHOD = "ticker_price_x_ticker_shares_outstanding_v2"
+
+
+def ticker_capitalization(quote: dict) -> dict:
+    """Use the listed share class/ADR/ETF units, never issuer-equivalent shares or AUM."""
+    price = positive(quote.get("regularMarketPrice"), "ticker price")
+    shares = positive(quote.get("sharesOutstanding"), "ticker shares outstanding")
+    with localcontext() as ctx:
+        ctx.prec = 40
+        amount = (price * shares).quantize(positive("0.01", "precision"), rounding=ROUND_HALF_UP)
+    return {
+        "market_cap_usd": str(amount),
+        "shares_outstanding": str(shares),
+        "method": METHOD,
+        "shares_source": quote.get("shares_source", "Yahoo Finance"),
+    }
 
 
 class UniverseChanged(DataError):
@@ -63,29 +88,47 @@ class BudgetSession(requests.Session):
         return response
 
 
-def listing_rows(text: str, nasdaq: bool) -> dict[str, dict]:
+def listing_rows(text: str, nasdaq: bool, reference: dict | None = None) -> dict[str, dict]:
     records = {}
     for row in csv.DictReader(io.StringIO(text), delimiter="|"):
         symbol = row.get("Symbol" if nasdaq else "ACT Symbol", "")
-        if not symbol or symbol.startswith("File Creation Time"):
+        if not symbol or "$" in symbol or symbol.startswith("File Creation Time"):
             continue
         name = row.get("Security Name", "")
-        exchange = "XNAS" if nasdaq else {"N": "XNYS", "A": "XASE"}.get(row.get("Exchange"))
-        if not exchange or row.get("Test Issue") != "N" or row.get("ETF") != "N":
+        yahoo_symbol = symbol.replace(".", "-")
+        extra = (reference or {}).get(yahoo_symbol, {})
+        exchange = (
+            "XNAS"
+            if nasdaq
+            else {"N": "XNYS", "A": "XASE", "P": "ARCX", "Z": "BATS"}.get(row.get("Exchange"))
+        )
+        if not exchange or row.get("Test Issue") != "N":
             continue
-        # Conservative scope: explicitly named common/capital/ordinary shares only.
-        if re.search(
-            r"\b(preferred|depositary|depository|warrants?|units?|notes?|rights?|fund|ETN)\b",
+        if row.get("ETF") == "Y":
+            if re.search(r"\b(ETN|exchange.traded notes?)\b", name, re.I):
+                continue
+            security_type = "ETF"
+        elif re.search(r"\b(preferred|pfd|warrants?|units?|notes?|rights?|ETN)\b", name, re.I):
+            continue
+        elif extra.get("security_type") == "ADR" or re.search(
+            r"\b(ADR|ADS|depositary|depository)\b",
             name,
             re.I,
         ):
-            continue
-        if not re.search(
-            r"\b(common stock|common shares|ordinary shares|capital stock)\b", name, re.I
+            security_type = "ADR"
+        elif re.search(
+            r"\b(common stock|common shares?|ordinary shares?|capital stock)\b", name, re.I
         ):
+            security_type = "CS"
+        else:
             continue
-        yahoo_symbol = symbol.replace(".", "-")
-        records[yahoo_symbol] = {"ticker": yahoo_symbol, "listing_name": name, "exchange": exchange}
+        records[yahoo_symbol] = {
+            "ticker": yahoo_symbol,
+            "listing_name": name,
+            "exchange": exchange,
+            "security_type": security_type,
+            "display_name": extra.get("name") or name,
+        }
     if not records:
         raise DataError("Public listing directory is empty or its schema has changed")
     return records
@@ -108,17 +151,30 @@ def issuer_name(quote: dict) -> str:
 
 
 def select_universe(bundle: dict, settings: Settings) -> tuple[dict, dict, dict]:
+    reference = {}
+    for directory in bundle.get("kis_directories", {}).values():
+        reference.update(kis_rows(directory))
     listings = {
-        **listing_rows(bundle["nasdaqlisted"], True),
-        **listing_rows(bundle["otherlisted"], False),
+        **listing_rows(bundle["nasdaqlisted"], True, reference),
+        **listing_rows(bundle["otherlisted"], False, reference),
     }
     quotes = {q["symbol"]: q for q in bundle["quotes"]}
     if len(quotes) != len(bundle["quotes"]):
         raise DataError("Duplicate tickers in the universe response")
     eligible = {
-        ticker for ticker, listing in listings.items() if listing["exchange"] in settings.exchanges
+        ticker
+        for ticker, listing in listings.items()
+        if listing["exchange"] in settings.exchanges
+        and listing["security_type"] in settings.security_types
     }
     selected = {ticker: quote for ticker, quote in quotes.items() if ticker in eligible}
+    units = etf_units(bundle["etf_shares"]) if "etf_shares" in bundle else {}
+    selected = {
+        ticker: {**quote, "sharesOutstanding": units[ticker], "shares_source": "TradingView"}
+        if listings[ticker]["security_type"] == "ETF" and ticker in units
+        else quote
+        for ticker, quote in selected.items()
+    }
     coverage = {
         "screened_tickers": len(quotes),
         "directory_eligible": len(eligible),
@@ -128,9 +184,22 @@ def select_universe(bundle: dict, settings: Settings) -> tuple[dict, dict, dict]
     return selected, listings, coverage
 
 
+def coverage_by_type(listings: dict, valid: dict, settings: Settings) -> dict:
+    return {
+        kind: {
+            "eligible": sum(
+                v["security_type"] == kind and v["exchange"] in settings.exchanges
+                for v in listings.values()
+            ),
+            "ranked": sum(listings[t]["security_type"] == kind for t in valid),
+        }
+        for kind in settings.security_types
+    }
+
+
 def validate_closed_quote(quote: dict, day: date, now: datetime) -> None:
     symbol = quote.get("symbol", "unknown")
-    if quote.get("currency") != "USD" or quote.get("quoteType") != "EQUITY":
+    if quote.get("currency") != "USD" or quote.get("quoteType") not in {"EQUITY", "ETF"}:
         raise DataError(f"{symbol}: unsupported currency or instrument type")
     if quote.get("marketState") not in {"POST", "POSTPOST", "PRE", "PREPRE", "CLOSED"}:
         raise DataError(f"{symbol}: regular session is still open; refusing intraday rankings")
@@ -144,7 +213,7 @@ def validate_closed_quote(quote: dict, day: date, now: datetime) -> None:
     if traded_at.timestamp() > close.timestamp() + 60:
         raise DataError(f"{symbol}: regular-market timestamp is outside the closing session")
     positive(quote.get("regularMarketPrice"), f"{symbol} regular close")
-    positive(quote.get("marketCap"), f"{symbol} company market cap")
+    ticker_capitalization(quote)
 
 
 class YahooProvider:
@@ -179,12 +248,13 @@ class YahooProvider:
             raise DataError("Nasdaq public listing directory is unavailable") from None
         return response.text
 
-    def screen(self, offset: int, size: int = 250) -> dict:
-        query = yf.EquityQuery(
+    def screen(self, offset: int, size: int = 250, *, etf: bool = False) -> dict:
+        query_type = yf.ETFQuery if etf else yf.EquityQuery
+        query = query_type(
             "and",
             [
-                yf.EquityQuery("eq", ["region", "us"]),
-                yf.EquityQuery(
+                query_type("eq", ["region", "us"]),
+                query_type(
                     "is-in",
                     [
                         "exchange",
@@ -220,7 +290,28 @@ class YahooProvider:
     def fetch_universe(self, *, require_closed: bool = False) -> dict:
         for attempt in range(self.settings.max_retries + 1):
             try:
-                return self._fetch_universe(require_closed=require_closed)
+                equities = self._fetch_universe(require_closed=require_closed)
+                if "ETF" in self.settings.security_types:
+                    etfs = self._fetch_universe(require_closed=require_closed, etf=True)
+                    # Yahoo sometimes lists an ETF in both screeners. Its ETF quote
+                    # is authoritative; cross-screener overlap is not a duplicate page.
+                    combined = {q["symbol"]: q for q in equities["quotes"]}
+                    combined.update({q["symbol"]: q for q in etfs["quotes"]})
+                    equities.update(
+                        quotes=list(combined.values()),
+                        etf_reported_total=etfs["reported_total"],
+                        etf_reported_totals=etfs["reported_totals"],
+                        captured_at=etfs["captured_at"],
+                        http_requests=self.requests_made,
+                    )
+                if set(self.settings.security_types) & {"ADR", "ETF"}:
+                    equities.update(
+                        fetch_supplements(self.budget, "ETF" in self.settings.security_types)
+                    )
+                    equities.update(
+                        captured_at=datetime.now(UTC).isoformat(), http_requests=self.requests_made
+                    )
+                return equities
             except UniverseChanged:
                 if attempt == self.settings.max_retries or self.budget.stop_reason:
                     raise
@@ -228,7 +319,7 @@ class YahooProvider:
                 time.sleep(3 * (attempt + 1))
         raise DataError("No complete Yahoo universe received")
 
-    def _fetch_universe(self, *, require_closed: bool = False) -> dict:
+    def _fetch_universe(self, *, require_closed: bool = False, etf: bool = False) -> dict:
         """Read every page, independent of any hand-picked history-download symbols.
 
         Use ticker ordering during pagination to prevent live market-cap changes
@@ -238,7 +329,7 @@ class YahooProvider:
         expected = None
         reported_totals = []
         while expected is None or len(quotes) < expected:
-            response = self.screen(len(quotes))
+            response = self.screen(len(quotes), etf=True) if etf else self.screen(len(quotes))
             total = response.get("total")
             if not isinstance(total, int) or total <= 0:
                 raise DataError("Yahoo did not report the universe size")
@@ -298,6 +389,7 @@ class YahooProvider:
                 validated[ticker] = quote
         self.coverage["excluded_quotes"] = excluded
         self.coverage["rankable_tickers"] = len(validated)
+        self.coverage["by_type"] = coverage_by_type(listings, validated, self.settings)
         self.coverage["valid_quote_ratio"] = len(validated) / self.coverage["directory_eligible"]
         atomic_json(self.root / "coverage" / f"{day}.json", self.coverage)
         if self.coverage["valid_quote_ratio"] < self.settings.minimum_quote_coverage:
@@ -341,12 +433,12 @@ class YahooProvider:
             result.append(
                 {
                     "ticker": ticker,
-                    "name": name,
+                    "name": listings[ticker]["display_name"],
                     "company_id": company_id,
                     "security_id": known.get(ticker, {}).get("security_id", f"yahoo:{ticker}"),
                     "primary_exchange": listings[ticker]["exchange"],
                     "currency_name": "usd",
-                    "type": "CS",
+                    "type": listings[ticker]["security_type"],
                 }
             )
         return result
@@ -366,8 +458,7 @@ class YahooProvider:
         quote = self._quotes[ticker]
         return {
             "ticker": ticker,
-            "market_cap_usd": quote["marketCap"],
+            **ticker_capitalization(quote),
             "market_cap_date": day,
             "market_cap_price": quote["regularMarketPrice"],
-            "method": METHOD,
         }

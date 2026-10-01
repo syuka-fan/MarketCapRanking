@@ -56,7 +56,7 @@ jobs:
       - name: Load persistent data
         id: prepare
         run: python scripts/data_branch.py prepare
-      - name: Discover all eligible US stocks and record closing market-cap rankings
+      - name: Rank individual US stock, ADR and ETF tickers
         id: collect
         continue-on-error: true
         env:
@@ -66,7 +66,7 @@ jobs:
           PYTHONUNBUFFERED: '1'
         shell: bash
         run: |
-          args=(--data-dir .marketcap-data --allow-provisional)
+          args=(--data-dir .marketcap-data/ticker-v2 --allow-provisional)
           if [[ -n "$FROM_DATE" ]]; then args+=(--from "$FROM_DATE"); fi
           if [[ -n "$TO_DATE" ]]; then args+=(--to "$TO_DATE"); fi
           if [[ "$REFRESH" == 'true' ]]; then args+=(--refresh); fi
@@ -82,14 +82,14 @@ jobs:
           from pathlib import Path
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               for filename in ('status.json',):
-                  path = Path('.marketcap-data') / filename
+                  path = Path('.marketcap-data/ticker-v2') / filename
                   status = json.loads(path.read_text()) if path.exists() else {'state': 'error'}
                   summary.write(f'## {filename}\n\n')
                   for key, value in status.items():
                       summary.write(f'- **{key}**: `{value}`\n')
           PY
       - name: Export last validated data and current status
-        run: marketcap export --data-dir .marketcap-data
+        run: marketcap export --data-dir .marketcap-data/ticker-v2
       - name: Build site
         working-directory: web
         run: |

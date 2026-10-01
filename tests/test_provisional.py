@@ -34,14 +34,14 @@ def test_repeated_intraday_updates_never_enter_closing_history(tmp_path, setting
     index = json.loads((tmp_path / "site/index.json").read_text())
     assert index["dates"] == ["2026-09-30"]
     assert index["closed_dates"] == index["axis_dates"] == []
-    for company in index["companies"]:
-        path = tmp_path / "site/companies" / company["history_file"]
+    for company in index["instruments"]:
+        path = tmp_path / "site/instruments" / company["history_file"]
         assert json.loads(path.read_text()) == {}
     csv = (tmp_path / "site/latest-prices.csv").read_text()
     assert "is_final_close" in csv and "False" in csv
     assert "close" not in csv.splitlines()[0].split(",")
     before = (tmp_path / "provisional.json").read_bytes()
-    data["quotes"][0]["marketCap"] = None
+    data["quotes"][0]["sharesOutstanding"] = None
     with pytest.raises(DataError, match="coverage"):
         collect_provisional(provider, now)
     assert (tmp_path / "provisional.json").read_bytes() == before
@@ -62,8 +62,8 @@ def test_completed_close_supersedes_provisional_without_contaminating_history(
     assert index["provisional_date"] is None
     assert index["closed_dates"] == index["axis_dates"] == ["2026-09-30"]
     assert Store(tmp_path).dates() == [date(2026, 9, 30)]
-    for company in index["companies"]:
-        assert list(json.loads((output / "companies" / company["history_file"]).read_text())) == [
+    for company in index["instruments"]:
+        assert list(json.loads((output / "instruments" / company["history_file"]).read_text())) == [
             "2026-09-30"
         ]
 

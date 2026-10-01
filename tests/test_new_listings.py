@@ -28,6 +28,9 @@ def collect_session(root, settings, monkeypatch, day, additions=()):
             "regularMarketTime": int(close.timestamp()),
             "currency": "USD",
             "quoteType": "EQUITY",
+            "sharesOutstanding": quote["marketCap"] / quote["regularMarketPrice"]
+            if quote["marketCap"]
+            else None,
             **quote,
         }
         for quote in quotes
@@ -73,24 +76,24 @@ def test_new_company_is_discovered_ranked_and_marked_new_without_changing_old_hi
     assert len(before["rankings"]) == 80
     assert len(after["rankings"]) == 81
     assert len(after["prices"]) == 81
-    assert after["rankings"][0]["canonical_ticker"] == "NEWCO"
+    assert after["rankings"][0]["ticker"] == "NEWCO"
     assert after["rankings"][0]["rank"] == 1
     assert Store(tmp_path).load(first) == before
 
     output = tmp_path / "site"
     export_site(tmp_path, output)
     rows = json.loads((output / f"days/{second}.json").read_text())["rows"]
-    new = next(row for row in rows if row["canonical_ticker"] == "NEWCO")
+    new = next(row for row in rows if row["ticker"] == "NEWCO")
     assert new["change_state"] == "new"
     assert new["rank_change"] is None
     assert all(row["rank_change"] == -1 for row in rows if row != new)
     index = json.loads((output / "index.json").read_text())
-    company = next(c for c in index["companies"] if c["id"] == new["company_id"])
-    history = json.loads((output / "companies" / company["history_file"]).read_text())
+    company = next(c for c in index["instruments"] if c["id"] == new["instrument_id"])
+    history = json.loads((output / "instruments" / company["history_file"]).read_text())
     assert list(history) == [str(second)]  # Never fabricate ranks before discovery.
 
 
-def test_new_share_class_joins_existing_company_without_double_counting_cap(
+def test_new_share_class_is_ranked_separately_without_merging_existing_history(
     tmp_path, settings, monkeypatch
 ):
     before = collect_session(tmp_path, settings, monkeypatch, date(2026, 9, 28))
@@ -101,13 +104,13 @@ def test_new_share_class_joins_existing_company_without_double_counting_cap(
         regularMarketPrice=9,
     )
     after = collect_session(tmp_path, settings, monkeypatch, date(2026, 9, 29), [extra])
-    assert len(after["rankings"]) == 80
+    assert len(after["rankings"]) == 81
     assert len(after["prices"]) == 81
     existing = next(s for s in before["securities"] if s["ticker"] == "BASE000")
     added = next(s for s in after["securities"] if s["ticker"] == "ZCLASS")
     assert added["company_id"] == existing["company_id"]
-    ranking = next(r for r in after["rankings"] if r["company_id"] == added["company_id"])
-    assert ranking["market_cap_usd"] == "1000.00"
+    ranking = next(r for r in after["rankings"] if r["instrument_id"] == added["security_id"])
+    assert ranking["market_cap_usd"] == "900.00"
 
 
 def test_new_listing_with_delayed_market_cap_is_retried_on_next_session(
@@ -122,6 +125,6 @@ def test_new_listing_with_delayed_market_cap_is_retried_on_next_session(
     assert incomplete["coverage"]["valid_quote_ratio"] >= 0.98
     complete = collect_session(tmp_path, settings, monkeypatch, date(2026, 9, 30), [new_issuer()])
     assert len(complete["rankings"]) == 81
-    assert complete["rankings"][0]["canonical_ticker"] == "NEWCO"
+    assert complete["rankings"][0]["ticker"] == "NEWCO"
     assert complete["coverage"]["excluded_quotes"] == []
     assert Store(tmp_path).load(date(2026, 9, 29)) == incomplete

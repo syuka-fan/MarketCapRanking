@@ -20,15 +20,14 @@ def positive(value: object, label: str) -> Decimal:
 
 @dataclass(frozen=True)
 class Settings:
-    exchanges: tuple[str, ...] = ("XNYS", "XNAS", "XASE")
-    security_types: tuple[str, ...] = ("CS",)
+    exchanges: tuple[str, ...] = ("XNYS", "XNAS", "XASE", "ARCX", "BATS")
+    security_types: tuple[str, ...] = ("CS", "ADR", "ETF")
     requests_per_minute: int = 20
     max_requests_per_run: int = 80
     max_retries: int = 3
-    minimum_companies: int = 1000
+    minimum_instruments: int = 1000
     minimum_universe_ratio: float = 0.9
     minimum_quote_coverage: float = 0.98
-    canonical_tickers: dict[str, str] = field(default_factory=dict)
     company_names: dict[str, str] = field(default_factory=dict)
     identity_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -45,18 +44,19 @@ class Settings:
             or not 0 <= result.max_retries <= 8
         ):
             raise DataError("Invalid request limit or retry count")
-        if result.minimum_companies < 1 or not 0 < result.minimum_universe_ratio <= 1:
+        if result.minimum_instruments < 1 or not 0 < result.minimum_universe_ratio <= 1:
             raise DataError("Invalid universe coverage threshold")
         if not 0 < result.minimum_quote_coverage <= 1:
             raise DataError("Invalid quote coverage threshold")
-        if result.security_types != ("CS",):
-            raise DataError("Only CS is supported; ADRs require a separate conversion policy")
-        if not result.exchanges or set(result.exchanges) - {"XNYS", "XNAS", "XASE"}:
+        if not result.security_types or set(result.security_types) - {"CS", "ADR", "ETF"}:
+            raise DataError("Supported instruments are CS, ADR and ETF")
+        if not result.exchanges or set(result.exchanges) - {"XNYS", "XNAS", "XASE", "ARCX", "BATS"}:
             raise DataError("Unsupported exchange calendar")
         return result
 
     def policy(self) -> dict:
         values = asdict(self)
+        values["ranking_basis"] = "ticker_price_x_ticker_shares_outstanding_v2"
         return json.loads(
             json.dumps(
                 {

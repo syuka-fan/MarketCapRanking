@@ -10,20 +10,20 @@ from marketcap.export import export_site
 from marketcap.identity import identify
 from marketcap.models import DataError
 from marketcap.pipeline import run
-from marketcap.ranking import rank_companies
+from marketcap.ranking import rank_instruments
 from marketcap.storage import Store
 
 
-def test_multiple_tickers_are_one_company_and_after_hours_is_ignored(
+def test_multiple_tickers_have_separate_ranks_and_after_hours_is_ignored(
     tmp_path, provider, settings, now
 ):
     run(provider, settings, tmp_path, now=now)
     store = Store(tmp_path)
     snapshot = store.load(date(2026, 9, 30))
     assert len(snapshot["securities"]) == len(snapshot["prices"]) == 3
-    assert len(snapshot["rankings"]) == 2
-    alpha = next(r for r in snapshot["rankings"] if r["company_id"] == "cik:0000000001")
-    assert alpha["canonical_ticker"] == "ALPHA.A"
+    assert len(snapshot["rankings"]) == 3
+    alpha = next(r for r in snapshot["rankings"] if r["ticker"] == "ALPHA.A")
+    assert alpha["ticker"] == "ALPHA.A"
     assert Decimal(alpha["market_cap_usd"]) == 1000  # Not A+B caps and not afterHours.
     price_file = next((tmp_path / "snapshots").glob("*/revisions/*/prices.csv"))
     with price_file.open() as stream:
@@ -90,9 +90,9 @@ def test_identity_survives_rename_and_missing_identity_is_rejected(provider, set
 
 
 def test_ties_use_competition_rank():
-    result = rank_companies(
+    result = rank_instruments(
         [
-            {"company_id": key, "market_cap_usd": cap}
+            {"instrument_id": key, "market_cap_usd": cap}
             for key, cap in [("a", "100"), ("b", "90"), ("c", "90"), ("d", "80")]
         ]
     )
@@ -117,8 +117,8 @@ def test_export_recomputes_changes_after_backfill_and_keeps_gaps(tmp_path, provi
     export_site(root, output)
     with (output / "latest-rankings.csv").open() as stream:
         exported = list(csv.DictReader(stream))
-    assert len(exported) == 2
-    assert [r["rank"] for r in exported] == ["1", "2"]
+    assert len(exported) == 3
+    assert [r["rank"] for r in exported] == ["1", "2", "3"]
     index = json.loads((output / "index.json").read_text())
     assert index["axis_dates"] == ["2026-09-28", "2026-09-29", "2026-09-30"]
     day = json.loads((output / "days/2026-09-30.json").read_text())

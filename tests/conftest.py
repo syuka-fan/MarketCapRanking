@@ -53,7 +53,9 @@ class SampleProvider:
 
 @pytest.fixture
 def settings():
-    return replace(Settings(), minimum_companies=1, minimum_universe_ratio=0.9)
+    return replace(
+        Settings(), minimum_instruments=1, minimum_universe_ratio=0.9, security_types=("CS",)
+    )
 
 
 @pytest.fixture

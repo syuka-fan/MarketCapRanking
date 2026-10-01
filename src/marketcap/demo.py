@@ -76,7 +76,7 @@ class DemoProvider:
 
 
 def generate(root: Path) -> None:
-    settings = replace(Settings(), minimum_companies=1, minimum_universe_ratio=0.1)
+    settings = replace(Settings(), minimum_instruments=1, minimum_universe_ratio=0.1)
     now = datetime(2026, 10, 1, 0, 0, tzinfo=UTC)
     run(
         DemoProvider(),

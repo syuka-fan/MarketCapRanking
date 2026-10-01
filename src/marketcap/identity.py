@@ -1,5 +1,3 @@
-from collections import defaultdict
-
 from marketcap.models import DataError, Security, Settings
 
 
@@ -41,25 +39,6 @@ def identify(rows: list[dict], settings: Settings) -> list[Security]:
         )
         seen_tickers.add(ticker)
         seen_securities.add(security_id)
-    if len({s.company_id for s in result}) < settings.minimum_companies:
-        raise DataError("Eligible universe is below minimum_companies; refusing partial rankings")
-    return sorted(result, key=lambda s: (s.company_id, s.ticker))
-
-
-def group_companies(securities: list[Security]) -> dict[str, list[Security]]:
-    groups: dict[str, list[Security]] = defaultdict(list)
-    for security in securities:
-        groups[security.company_id].append(security)
-    return dict(groups)
-
-
-def canonical(members: list[Security], settings: Settings) -> Security:
-    preferred = settings.canonical_tickers.get(
-        members[0].company_id
-    ) or settings.canonical_tickers.get(members[0].company_name)
-    if preferred:
-        matches = [s for s in members if s.ticker == preferred]
-        if matches:
-            return matches[0]
-        # A configured modern ticker may not have existed on a historical date.
-    return min(members, key=lambda s: s.security_id)
+    if len(result) < settings.minimum_instruments:
+        raise DataError("Eligible universe is below minimum_instruments; refusing partial rankings")
+    return sorted(result, key=lambda s: s.security_id)

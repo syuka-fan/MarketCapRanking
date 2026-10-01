@@ -41,6 +41,11 @@ def quote(symbol="ALPHA", **changes):
         "regularMarketTime": 1790798400,
         "regularMarketPrice": 10,
         "marketCap": 1000,
+        "sharesOutstanding": (
+            changes.get("marketCap", 1000) / changes.get("regularMarketPrice", 10)
+        )
+        if changes.get("marketCap", 1000)
+        else None,
         "currency": "USD",
         "quoteType": "EQUITY",
         **changes,
@@ -61,8 +66,8 @@ def bundle():
     }
 
 
-def test_directories_exclude_etf_adr_and_map_class_symbols():
-    assert set(listing_rows(NASDAQ, True)) == {"ALPHA", "ALPHB"}
+def test_directories_include_etf_adr_and_map_class_symbols():
+    assert set(listing_rows(NASDAQ, True)) == {"ALPHA", "ALPHB", "ETF", "ADR"}
     assert listing_rows(OTHER.replace("BETA", "BRK.B"), False)["BRK-B"]["exchange"] == "XNYS"
 
 
@@ -74,21 +79,20 @@ def test_only_closed_date_matched_regular_quotes_are_accepted():
         validate_closed_quote(quote(marketState="REGULAR"), day, now)
     with pytest.raises(DataError, match="closing date"):
         validate_closed_quote(quote(regularMarketTime=1790712000), day, now)
-    with pytest.raises(DataError, match="market cap"):
+    with pytest.raises(DataError, match="shares outstanding"):
         validate_closed_quote(quote(marketCap=None), day, now)
 
 
-def test_bulk_company_cap_is_not_summed_and_can_be_recovered_without_network(
+def test_bulk_ticker_caps_are_separate_and_can_be_recovered_without_network(
     tmp_path, settings, now, monkeypatch
 ):
-    settings = replace(settings, canonical_tickers={"Alpha Inc.": "ALPHA"})
     provider = YahooProvider(settings, tmp_path)
     monkeypatch.setattr(provider, "fetch_bundle", lambda day: bundle())
     run(provider, settings, tmp_path, now=now)
     snapshot = Store(tmp_path).load(date(2026, 9, 30))
     assert len(snapshot["prices"]) == 3
-    assert len(snapshot["rankings"]) == 2
-    alpha = next(r for r in snapshot["rankings"] if r["company_name"] == "Alpha Inc.")
+    assert len(snapshot["rankings"]) == 3
+    alpha = next(r for r in snapshot["rankings"] if r["ticker"] == "ALPHA")
     assert alpha["market_cap_usd"] == "1000.00"
     assert snapshot["coverage"]["quoted_eligible"] == 3
     again = YahooProvider(settings, tmp_path)
@@ -199,7 +203,7 @@ def test_all_pages_become_rankings_with_no_fixed_ticker_or_top_n_limit(
     tmp_path, settings, now, monkeypatch
 ):
     data = large_bundle()
-    settings = replace(settings, minimum_companies=300)
+    settings = replace(settings, minimum_instruments=300)
     provider = YahooProvider(settings, tmp_path)
     offsets = []
 
@@ -218,9 +222,9 @@ def test_all_pages_become_rankings_with_no_fixed_ticker_or_top_n_limit(
     status = run(provider, settings, tmp_path, now=now)
     assert offsets == [0, 250]
     assert status["ticker_count"] == 303
-    assert status["company_count"] == 302
+    assert status["instrument_count"] == 303
     snapshot = Store(tmp_path).load(date(2026, 9, 30))
-    assert snapshot["rankings"][0]["canonical_ticker"] == "S0299"
+    assert snapshot["rankings"][0]["ticker"] == "S0299"
     assert {row["ticker"] for row in snapshot["prices"]} == {q["symbol"] for q in data["quotes"]}
 
 
@@ -228,7 +232,7 @@ def test_small_missing_cap_is_reported_but_mass_missing_data_is_rejected(
     tmp_path, settings, now, monkeypatch
 ):
     data = large_bundle()
-    data["quotes"][0]["marketCap"] = None
+    data["quotes"][0]["sharesOutstanding"] = None
     provider = YahooProvider(settings, tmp_path)
     monkeypatch.setattr(provider, "fetch_bundle", lambda day: data)
     run(provider, settings, tmp_path, now=now)
@@ -237,7 +241,7 @@ def test_small_missing_cap_is_reported_but_mass_missing_data_is_rejected(
     assert snapshot["coverage"]["excluded_quotes"][0]["ticker"] == "S0000"
     assert snapshot["coverage"]["valid_quote_ratio"] >= 0.98
     for q in data["quotes"][:10]:
-        q["marketCap"] = None
+        q["sharesOutstanding"] = None
     other = tmp_path / "failed"
     broken = YahooProvider(settings, other)
     monkeypatch.setattr(broken, "fetch_bundle", lambda day: data)
@@ -256,7 +260,7 @@ def test_intraday_universe_inspection_never_creates_a_daily_snapshot(tmp_path, s
     for q in data["quotes"]:
         q["marketState"] = "REGULAR"
     report = inspect_universe(YahooProvider(settings, tmp_path), data)
-    assert report["company_count"] == 302
+    assert report["instrument_count"] == 303
     assert report["rankable_tickers"] == 303
     assert report["is_final_close"] is False
     assert report["market_states"] == {"REGULAR": 303}

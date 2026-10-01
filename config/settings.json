@@ -1,16 +1,22 @@
 {
-  "exchanges": ["XNYS", "XNAS", "XASE"],
-  "security_types": ["CS"],
+  "exchanges": [
+    "XNYS",
+    "XNAS",
+    "XASE",
+    "ARCX",
+    "BATS"
+  ],
+  "security_types": [
+    "CS",
+    "ADR",
+    "ETF"
+  ],
   "requests_per_minute": 20,
   "max_requests_per_run": 80,
   "max_retries": 3,
-  "minimum_companies": 1000,
+  "minimum_instruments": 1000,
   "minimum_universe_ratio": 0.9,
   "minimum_quote_coverage": 0.98,
-  "canonical_tickers": {
-    "Alphabet Inc.": "GOOGL",
-    "Berkshire Hathaway Inc.": "BRK-B"
-  },
   "company_names": {},
   "identity_overrides": {}
 }

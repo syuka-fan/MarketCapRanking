@@ -8,13 +8,13 @@ from decimal import ROUND_HALF_UP, localcontext
 from pathlib import Path
 
 from marketcap.calendar import latest_completed, sessions
-from marketcap.identity import canonical, group_companies, identify
+from marketcap.identity import identify
 from marketcap.models import DataError, Security, Settings, positive
 from marketcap.providers import Provider
-from marketcap.ranking import rank_companies
+from marketcap.ranking import rank_instruments
 from marketcap.storage import Store, atomic_json
 
-METHOD = "regular_close_x_equivalent_company_shares_v1"
+METHOD = "ticker_price_x_ticker_shares_outstanding_v2"
 
 
 def validate_detail(detail: dict, representative: Security, day: str | None = None) -> None:
@@ -73,7 +73,7 @@ def collect_day(
 
     rows = cached("universe", lambda: provider.tickers(label), lambda r: identify(r, settings))
     securities = identify(rows, settings)
-    groups = group_companies(securities)
+    groups = {s.security_id: [s] for s in securities}
     earlier = [d for d in store.dates() if d < day]
     if earlier:
         prior_count = len(store.load(earlier[-1])["rankings"])
@@ -86,8 +86,8 @@ def collect_day(
     prices = []
     company_rows = []
     raw = {"universe": rows, "quotes": {}, "details": {}}
-    for index, (company_id, members) in enumerate(sorted(groups.items())):
-        representative = canonical(members, settings)
+    for index, (instrument_id, members) in enumerate(sorted(groups.items())):
+        representative = members[0]
         detail_key = "detail-" + hashlib.sha256(representative.ticker.encode()).hexdigest()
         detail = cached(
             detail_key,
@@ -99,7 +99,9 @@ def collect_day(
             if "weighted_shares_outstanding" in detail
             else None
         )
-        company_name = settings.company_names.get(company_id) or representative.company_name
+        company_name = (
+            settings.company_names.get(representative.company_id) or representative.company_name
+        )
         representative_close = None
         for security in members:
             quote_key = "quote-" + hashlib.sha256(security.ticker.encode()).hexdigest()
@@ -116,7 +118,7 @@ def collect_day(
                     "company_name": company_name,
                     "ticker": security.ticker,
                     "close": str(close),
-                    "company_id": company_id,
+                    "instrument_id": instrument_id,
                     "security_id": security.security_id,
                     "currency": "USD",
                 }
@@ -136,19 +138,22 @@ def collect_day(
             cap = amount.quantize(positive("0.01", "precision"), rounding=ROUND_HALF_UP)
         company_rows.append(
             {
-                "company_id": company_id,
+                "instrument_id": instrument_id,
                 "company_name": company_name,
                 "market_cap_usd": str(cap),
-                "canonical_ticker": representative.ticker,
-                "weighted_shares_outstanding": str(shares) if shares is not None else "",
+                "ticker": representative.ticker,
+                "security_type": representative.share_type,
+                "issuer_id": representative.company_id,
+                "shares_outstanding": detail.get("shares_outstanding", str(shares or "")),
+                "shares_source": detail.get("shares_source", provider.name),
                 "method": detail.get("method", METHOD),
             }
         )
         raw["details"][representative.ticker] = detail
         if (index + 1) % 100 == 0:
-            print(f"{label}: validated {index + 1}/{len(groups)} companies", flush=True)
+            print(f"{label}: validated {index + 1}/{len(groups)} instruments", flush=True)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "trade_date": label,
         "collected_at": now.isoformat(),
         "source": provider.name,
@@ -158,7 +163,7 @@ def collect_day(
         "market_close_at": sessions(day, day)[day].isoformat(),
         "securities": [asdict(s) for s in securities],
         "prices": prices,
-        "rankings": rank_companies(company_rows),
+        "rankings": rank_instruments(company_rows),
     }, raw
 
 
@@ -235,7 +240,7 @@ def run(
             status["latest_trade_date"] = current[-1].isoformat() if current else None
             last = store.load(current[-1]) if current else None
             status["last_success_at"] = last["collected_at"] if last else None
-            status["company_count"] = len(last["rankings"]) if last else 0
+            status["instrument_count"] = len(last["rankings"]) if last else 0
             status["ticker_count"] = len(last["prices"]) if last else 0
             status["coverage"] = last.get("coverage") if last else None
             status["api_requests"] = getattr(provider, "requests_made", 0)

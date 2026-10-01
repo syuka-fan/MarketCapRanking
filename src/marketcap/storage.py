@@ -14,7 +14,7 @@ PRICE_COLUMNS = [
     "ticker",
     "close",
     "trade_date",
-    "company_id",
+    "instrument_id",
     "security_id",
     "currency",
     "source",
@@ -22,12 +22,14 @@ PRICE_COLUMNS = [
 ]
 RANK_COLUMNS = [
     "trade_date",
-    "company_id",
+    "instrument_id",
     "company_name",
     "market_cap_usd",
     "rank",
-    "canonical_ticker",
-    "weighted_shares_outstanding",
+    "ticker",
+    "shares_outstanding",
+    "shares_source",
+    "security_type",
     "method",
     "source",
 ]

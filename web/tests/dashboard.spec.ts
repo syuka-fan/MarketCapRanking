@@ -4,14 +4,14 @@ test('fictional preview supports search, multiple tickers, dates and comparison'
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(e.message));
   await page.goto('/');
-  await expect(page.getByRole('status')).toContainText('가상 기업');
-  await expect(page.locator('#stat-companies')).toHaveText('24');
+  await expect(page.getByRole('status')).toContainText('가상 종목');
+  await expect(page.locator('#stat-companies')).toHaveText('26');
   await expect(page.locator('#chart canvas')).toBeVisible();
   await page.getByRole('searchbox').fill('D00');
-  await expect(page.locator('#rows tr')).toHaveCount(1);
-  await expect(page.locator('#rows')).toContainText('D00A · D00B');
+  await expect(page.locator('#rows tr')).toHaveCount(2);
+  await expect(page.locator('#rows .tickers')).toHaveText(['D00A · 보통주', 'D00B · 보통주']);
   await expect(page.locator('#rows .prices div')).toHaveCount(2);
-  const comparison = page.getByRole('button', { name: 'Northstar (가상) 비교', exact: true });
+  const comparison = page.getByRole('button', { name: 'Northstar (가상) (D00A) 비교', exact: true });
   const before = await comparison.getAttribute('aria-pressed');
   await comparison.click();
   await expect(comparison).toHaveAttribute('aria-pressed', before === 'true' ? 'false' : 'true');
@@ -24,7 +24,7 @@ test('fictional preview supports search, multiple tickers, dates and comparison'
 
 test('empty data shows an honest empty state', async ({ page }) => {
   await page.route('**/data/index.json', route => route.fulfill({ status: 200, json: {
-    schema_version: 1, dates: [], axis_dates: [], companies: [], status: { state: 'empty' }, is_demo: false,
+    schema_version: 2, dates: [], axis_dates: [], instruments: [], status: { state: 'empty' }, is_demo: false,
   } }));
   await page.goto('/');
   await expect(page.locator('#rows')).toContainText('첫 거래일 데이터');
@@ -41,13 +41,13 @@ test('failed updates retain last data and show failure', async ({ page }) => {
   });
   await page.goto('/');
   await expect(page.getByRole('status')).toContainText('최근 갱신에 실패');
-  await expect(page.locator('#stat-companies')).toHaveText('24');
+  await expect(page.locator('#stat-companies')).toHaveText('26');
 });
 
 test('mobile viewport keeps the page within its width', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  await expect(page.locator('#stat-companies')).toHaveText('24');
+  await expect(page.locator('#stat-companies')).toHaveText('26');
   const overflows = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   expect(overflows).toBe(false);
   await page.screenshot({ path: 'test-results/dashboard-mobile.png', fullPage: true });

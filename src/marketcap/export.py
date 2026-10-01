@@ -41,7 +41,7 @@ def _export(root: Path, destination: Path, db: sqlite3.Connection) -> None:
         }
     )
     destination.mkdir(parents=True, exist_ok=True)
-    company_index: dict[str, dict] = {}
+    instrument_index: dict[str, dict] = {}
     prior_day = None
     previous_ranks: dict[str, int] = {}
     latest = None
@@ -52,14 +52,14 @@ def _export(root: Path, destination: Path, db: sqlite3.Connection) -> None:
         previous = previous_ranks if has_prior else {}
         quotes: dict[str, list] = {}
         for quote in snapshot["prices"]:
-            quotes.setdefault(quote["company_id"], []).append(quote)
+            quotes.setdefault(quote["instrument_id"], []).append(quote)
         rows = []
         for rank in snapshot["rankings"]:
-            company_id = rank["company_id"]
-            change = previous[company_id] - rank["rank"] if company_id in previous else None
+            instrument_id = rank["instrument_id"]
+            change = previous[instrument_id] - rank["rank"] if instrument_id in previous else None
             change_state = (
                 "known"
-                if company_id in previous
+                if instrument_id in previous
                 else "new"
                 if has_prior
                 else "baseline"
@@ -72,54 +72,61 @@ def _export(root: Path, destination: Path, db: sqlite3.Connection) -> None:
                     "market_cap_usd": float(rank["market_cap_usd"]),
                     "rank_change": change,
                     "change_state": change_state,
-                    "prices": [{**q, "close": float(q["close"])} for q in quotes[company_id]],
+                    "prices": [{**q, "close": float(q["close"])} for q in quotes[instrument_id]],
                 }
             )
-            company_index[company_id] = {
-                "id": company_id,
+            instrument_index[instrument_id] = {
+                "id": instrument_id,
                 "name": rank["company_name"],
                 "tickers": sorted(
-                    set(company_index.get(company_id, {}).get("tickers", []))
-                    | {q["ticker"] for q in quotes[company_id]}
+                    set(instrument_index.get(instrument_id, {}).get("tickers", []))
+                    | {q["ticker"] for q in quotes[instrument_id]}
                 ),
             }
             point = {
                 "rank": rank["rank"],
                 "market_cap_usd": float(rank["market_cap_usd"]),
                 "prices": [
-                    {"ticker": q["ticker"], "close": float(q["close"])} for q in quotes[company_id]
+                    {"ticker": q["ticker"], "close": float(q["close"])}
+                    for q in quotes[instrument_id]
                 ],
             }
             if not is_provisional:
                 db.execute(
                     "INSERT INTO history VALUES (?, ?, ?)",
-                    (company_id, str(day), json.dumps(point)),
+                    (instrument_id, str(day), json.dumps(point)),
                 )
         atomic_json(
             destination / "days" / f"{day}.json",
             {"date": day.isoformat(), "is_final_close": not is_provisional, "rows": rows},
         )
         prior_day = day
-        previous_ranks = {r["company_id"]: r["rank"] for r in snapshot["rankings"]}
+        previous_ranks = {r["instrument_id"]: r["rank"] for r in snapshot["rankings"]}
         latest = snapshot
     axis_dates = list(sessions(closed_dates[0], closed_dates[-1])) if closed_dates else []
-    for company_id in company_index:
+    for instrument_id in instrument_index:
         points = {
             day: json.loads(point)
             for day, point in db.execute(
-                "SELECT day, point FROM history WHERE company = ? ORDER BY day", (company_id,)
+                "SELECT day, point FROM history WHERE company = ? ORDER BY day", (instrument_id,)
             )
         }
-        filename = hashlib.sha256(company_id.encode()).hexdigest()[:24] + ".json"
-        company_index[company_id]["history_file"] = filename
-        atomic_json(destination / "companies" / filename, points)
+        filename = hashlib.sha256(instrument_id.encode()).hexdigest()[:24] + ".json"
+        instrument_index[instrument_id]["history_file"] = filename
+        atomic_json(destination / "instruments" / filename, points)
     exchanges = latest["policy"]["exchanges"] if latest else ["XNYS", "XNAS", "XASE"]
-    exchange_names = {"XNYS": "NYSE", "XNAS": "Nasdaq", "XASE": "NYSE American"}
+    exchange_names = {
+        "XNYS": "NYSE",
+        "XNAS": "Nasdaq",
+        "XASE": "NYSE American",
+        "ARCX": "NYSE Arca",
+        "BATS": "Cboe BZX",
+    }
     scope = " · ".join(exchange_names[e] for e in exchanges)
     atomic_json(
         destination / "index.json",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "publication_id": hashlib.sha256(
                 json.dumps({"status": status, "latest": latest}, sort_keys=True).encode()
             ).hexdigest(),
@@ -133,14 +140,14 @@ def _export(root: Path, destination: Path, db: sqlite3.Connection) -> None:
             "source": latest["source"] if latest else None,
             "coverage": latest.get("coverage") if latest else None,
             "method": (
-                "장중·잠정 가격과 대표 티커의 Yahoo 기업 시가총액 (종가 이력에서 제외)"
+                "장중·잠정 티커별 가격 × 해당 티커 발행수 (종가 이력에서 제외)"
                 if provisional
-                else "본장 종료 후 대표 티커의 Yahoo 기업 시가총액 (복수 티커 합산 없음)"
+                else "티커별 본장 종가 × 해당 티커 발행수 (보통주·ADR·ETF, 티커 병합 없음)"
                 if latest and latest["source"] == "yahoo"
-                else "가상 데이터의 기업별 시가총액"
+                else "가상 데이터의 티커별 시가총액"
             ),
-            "scope": f"{scope} / Yahoo·Nasdaq 명부에서 확인되는 USD 보통주 / ADR·ETF 제외",
-            "companies": list(company_index.values()),
+            "scope": f"{scope} / Yahoo·Nasdaq 명부에서 확인되는 USD 보통주·ADR·ETF",
+            "instruments": list(instrument_index.values()),
         },
     )
     if provisional:
@@ -148,7 +155,16 @@ def _export(root: Path, destination: Path, db: sqlite3.Connection) -> None:
             (
                 "rankings",
                 provisional["rankings"],
-                ["company_name", "canonical_ticker", "rank", "market_cap_usd"],
+                [
+                    "company_name",
+                    "ticker",
+                    "security_type",
+                    "rank",
+                    "market_cap_usd",
+                    "shares_outstanding",
+                    "shares_source",
+                    "method",
+                ],
             ),
             ("prices", provisional["prices"], ["company_name", "ticker", "price", "quote_date"]),
         ):

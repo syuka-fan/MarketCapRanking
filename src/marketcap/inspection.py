@@ -5,10 +5,15 @@ from collections import Counter
 from datetime import datetime
 
 from marketcap.calendar import NEW_YORK
-from marketcap.identity import canonical, group_companies, identify
+from marketcap.identity import identify
 from marketcap.models import DataError, positive
-from marketcap.providers.yahoo import YahooProvider, issuer_name, select_universe
-from marketcap.ranking import rank_companies
+from marketcap.providers.yahoo import (
+    YahooProvider,
+    issuer_name,
+    select_universe,
+    ticker_capitalization,
+)
+from marketcap.ranking import rank_instruments
 from marketcap.storage import atomic_json
 
 
@@ -19,9 +24,9 @@ def inspect_universe(provider: YahooProvider, bundle: dict | None = None) -> dic
     excluded = []
     for ticker, quote in selected.items():
         try:
-            if quote.get("currency") != "USD" or quote.get("quoteType") != "EQUITY":
+            if quote.get("currency") != "USD" or quote.get("quoteType") not in {"EQUITY", "ETF"}:
                 raise DataError("Not a USD equity")
-            positive(quote.get("marketCap"), "market cap")
+            ticker_capitalization(quote)
             positive(quote.get("regularMarketPrice"), "price")
             issuer_name(quote)
         except DataError as exc:
@@ -32,33 +37,30 @@ def inspect_universe(provider: YahooProvider, bundle: dict | None = None) -> dic
     day = captured.astimezone(NEW_YORK).date().isoformat()
     securities = identify(provider.security_rows(valid, listings, day), provider.settings)
     rows = []
-    for company_id, members in group_companies(securities).items():
-        representative = canonical(members, provider.settings)
+    for instrument_id, members in {s.security_id: [s] for s in securities}.items():
+        representative = members[0]
         quote = valid[representative.ticker]
         rows.append(
             {
                 "company_name": representative.company_name,
                 "ticker": representative.ticker,
                 "regular_price": str(quote["regularMarketPrice"]),
-                "market_cap_usd": str(
-                    positive(quote["marketCap"], "market cap").quantize(
-                        positive(".01", "precision")
-                    )
-                ),
-                "company_id": company_id,
+                **ticker_capitalization(quote),
+                "security_type": representative.share_type,
+                "instrument_id": instrument_id,
                 "tickers": "|".join(sorted(s.ticker for s in members)),
                 "captured_at": bundle["captured_at"],
                 "is_final_close": False,
             }
         )
-    ranked = rank_companies(rows)
+    ranked = rank_instruments(rows)
     report = {
         "scope": "universe_inspection_not_daily_closing_history",
         "is_final_close": False,
         "captured_at": bundle["captured_at"],
         **coverage,
         "rankable_tickers": len(valid),
-        "company_count": len(ranked),
+        "instrument_count": len(ranked),
         "excluded_quotes": excluded,
         "market_states": dict(Counter(q.get("marketState", "unknown") for q in selected.values())),
         "source_http_requests": bundle.get("http_requests"),
