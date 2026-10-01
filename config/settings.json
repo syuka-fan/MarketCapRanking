@@ -12,7 +12,7 @@
     "ETF"
   ],
   "requests_per_minute": 20,
-  "max_requests_per_run": 80,
+  "max_requests_per_run": 180,
   "max_retries": 3,
   "minimum_instruments": 1000,
   "minimum_universe_ratio": 0.9,

@@ -298,34 +298,35 @@ class YahooProvider:
         return {"trade_date": day, **self.fetch_universe(require_closed=True)}
 
     def fetch_universe(self, *, require_closed: bool = False) -> dict:
+        equities = self._stable_universe(require_closed=require_closed)
+        if "ETF" in self.settings.security_types:
+            etfs = self._stable_universe(require_closed=require_closed, etf=True)
+            # Keep a validated stock batch when only the ETF listing set changes.
+            # Cross-screener overlap is expected; prefer the ETF quote for ETFs.
+            combined = {q["symbol"]: q for q in equities["quotes"]}
+            combined.update({q["symbol"]: q for q in etfs["quotes"]})
+            equities.update(
+                quotes=list(combined.values()),
+                etf_reported_total=etfs["reported_total"],
+                etf_reported_totals=etfs["reported_totals"],
+                captured_at=etfs["captured_at"],
+                http_requests=self.requests_made,
+            )
+        if set(self.settings.security_types) & {"ADR", "ETF"}:
+            equities.update(fetch_supplements(self.budget, "ETF" in self.settings.security_types))
+            equities.update(
+                captured_at=datetime.now(UTC).isoformat(), http_requests=self.requests_made
+            )
+        return equities
+
+    def _stable_universe(self, *, require_closed: bool, etf: bool = False) -> dict:
         for attempt in range(self.settings.max_retries + 1):
             try:
-                equities = self._fetch_universe(require_closed=require_closed)
-                if "ETF" in self.settings.security_types:
-                    etfs = self._fetch_universe(require_closed=require_closed, etf=True)
-                    # Yahoo sometimes lists an ETF in both screeners. Its ETF quote
-                    # is authoritative; cross-screener overlap is not a duplicate page.
-                    combined = {q["symbol"]: q for q in equities["quotes"]}
-                    combined.update({q["symbol"]: q for q in etfs["quotes"]})
-                    equities.update(
-                        quotes=list(combined.values()),
-                        etf_reported_total=etfs["reported_total"],
-                        etf_reported_totals=etfs["reported_totals"],
-                        captured_at=etfs["captured_at"],
-                        http_requests=self.requests_made,
-                    )
-                if set(self.settings.security_types) & {"ADR", "ETF"}:
-                    equities.update(
-                        fetch_supplements(self.budget, "ETF" in self.settings.security_types)
-                    )
-                    equities.update(
-                        captured_at=datetime.now(UTC).isoformat(), http_requests=self.requests_made
-                    )
-                return equities
+                return self._fetch_universe(require_closed=require_closed, etf=etf)
             except UniverseChanged:
                 if attempt == self.settings.max_retries or self.budget.stop_reason:
                     raise
-                print("Yahoo listing set changed; restarting the full batch", flush=True)
+                print("Yahoo listing set changed; restarting the affected screener", flush=True)
                 time.sleep(3 * (attempt + 1))
         raise DataError("No complete Yahoo universe received")
 

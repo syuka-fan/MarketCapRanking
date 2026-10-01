@@ -130,3 +130,26 @@ def test_equity_and_etf_screeners_are_both_exhausted(tmp_path, settings, monkeyp
     assert calls == [(False, 0), (True, 0), (True, 1)]
     assert {q["symbol"] for q in result["quotes"]} == {"ALPHA", "ETF", "NEXT"}
     assert next(q for q in result["quotes"] if q["symbol"] == "ETF")["quoteType"] == "ETF"
+
+
+def test_etf_retry_keeps_already_validated_stock_pages(tmp_path, settings, monkeypatch):
+    provider = YahooProvider(replace(settings, security_types=("CS", "ETF")), tmp_path)
+    calls = []
+    etf_pages = iter(
+        [
+            {"total": 2, "quotes": [quote("ETF")]},
+            {"total": 2, "quotes": [quote("ETF")]},
+            {"total": 2, "quotes": [quote("ETF"), quote("NEXT")]},
+        ]
+    )
+
+    def screen(offset, *, etf=False):
+        calls.append((etf, offset))
+        return next(etf_pages) if etf else {"total": 1, "quotes": [quote("ALPHA")]}
+
+    monkeypatch.setattr(provider, "screen", screen)
+    monkeypatch.setattr(provider, "_text", lambda url: "directory")
+    monkeypatch.setattr("marketcap.providers.yahoo.fetch_supplements", lambda *args: {})
+    monkeypatch.setattr("marketcap.providers.yahoo.time.sleep", lambda seconds: None)
+    assert len(provider.fetch_universe()["quotes"]) == 3
+    assert calls == [(False, 0), (True, 0), (True, 1), (True, 0)]

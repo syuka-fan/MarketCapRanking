@@ -23,7 +23,7 @@ class Settings:
     exchanges: tuple[str, ...] = ("XNYS", "XNAS", "XASE", "ARCX", "BATS")
     security_types: tuple[str, ...] = ("CS", "ADR", "ETF")
     requests_per_minute: int = 20
-    max_requests_per_run: int = 80
+    max_requests_per_run: int = 180
     max_retries: int = 3
     minimum_instruments: int = 1000
     minimum_universe_ratio: float = 0.9
