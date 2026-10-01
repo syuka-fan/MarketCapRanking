@@ -25,6 +25,10 @@ EXCHANGES = {"NMS": "XNAS", "NGM": "XNAS", "NCM": "XNAS", "NYQ": "XNYS", "ASE": 
 METHOD = "yahoo_company_market_cap_at_regular_close_v1"
 
 
+class UniverseChanged(DataError):
+    """The listing set moved while a paginated batch was being read."""
+
+
 class RequestBudget:
     def __init__(self, settings: Settings):
         self.limit = settings.max_requests_per_run
@@ -214,6 +218,17 @@ class YahooProvider:
         return {"trade_date": day, **self.fetch_universe(require_closed=True)}
 
     def fetch_universe(self, *, require_closed: bool = False) -> dict:
+        for attempt in range(self.settings.max_retries + 1):
+            try:
+                return self._fetch_universe(require_closed=require_closed)
+            except UniverseChanged:
+                if attempt == self.settings.max_retries or self.budget.stop_reason:
+                    raise
+                print("Yahoo listing set changed; restarting the full batch", flush=True)
+                time.sleep(3 * (attempt + 1))
+        raise DataError("No complete Yahoo universe received")
+
+    def _fetch_universe(self, *, require_closed: bool = False) -> dict:
         """Read every page, independent of any hand-picked history-download symbols.
 
         Use ticker ordering during pagination to prevent live market-cap changes
@@ -227,9 +242,7 @@ class YahooProvider:
             if not isinstance(total, int) or total <= 0:
                 raise DataError("Yahoo did not report the universe size")
             if expected is not None and total != expected:
-                raise DataError(
-                    "Yahoo universe changed during pagination; retry after market close"
-                )
+                raise UniverseChanged("Yahoo universe changed during pagination")
             expected = total
             page = response["quotes"]
             if not page:
@@ -242,7 +255,7 @@ class YahooProvider:
             print(f"Yahoo universe: {len(quotes)}/{expected} tickers", flush=True)
         symbols = [q.get("symbol") for q in quotes]
         if len(symbols) != len(set(symbols)) or len(quotes) != expected:
-            raise DataError("Duplicate or incomplete Yahoo pagination")
+            raise UniverseChanged("Duplicate or incomplete Yahoo pagination")
         nasdaq = self._text("https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt")
         other = self._text("https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt")
         return {

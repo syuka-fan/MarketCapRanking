@@ -268,7 +268,32 @@ def test_intraday_universe_inspection_never_creates_a_daily_snapshot(tmp_path, s
 def test_duplicate_pagination_does_not_publish_an_incomplete_universe(
     tmp_path, settings, monkeypatch
 ):
-    provider = YahooProvider(settings, tmp_path)
+    provider = YahooProvider(replace(settings, max_retries=0), tmp_path)
     monkeypatch.setattr(provider, "screen", lambda offset: {"total": 2, "quotes": [quote()]})
     with pytest.raises(DataError, match="Duplicate or incomplete"):
         provider.fetch_universe(require_closed=True)
+
+
+def test_listing_change_retries_from_first_page_without_mixing_batches(
+    tmp_path, settings, monkeypatch
+):
+    provider = YahooProvider(settings, tmp_path)
+    responses = iter(
+        [
+            {"total": 2, "quotes": [quote()]},
+            {"total": 3, "quotes": [quote("ALPHB")]},
+            {"total": 3, "quotes": [quote(), quote("ALPHB"), quote("BETA")]},
+        ]
+    )
+    offsets = []
+
+    def screen(offset):
+        offsets.append(offset)
+        return next(responses)
+
+    monkeypatch.setattr(provider, "screen", screen)
+    monkeypatch.setattr(provider, "_text", lambda url: "directory")
+    monkeypatch.setattr("marketcap.providers.yahoo.time.sleep", lambda seconds: None)
+    result = provider.fetch_universe()
+    assert offsets == [0, 1, 0]
+    assert [q["symbol"] for q in result["quotes"]] == ["ALPHA", "ALPHB", "BETA"]
