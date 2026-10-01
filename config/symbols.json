@@ -1,0 +1,12 @@
+{
+  "us": {
+    "AAPL": "Apple Inc.",
+    "MSFT": "Microsoft Corporation",
+    "NVDA": "NVIDIA Corporation",
+    "AMZN": "Amazon.com, Inc.",
+    "GOOGL": "Alphabet Inc.",
+    "GOOG": "Alphabet Inc.",
+    "BRK-A": "Berkshire Hathaway Inc.",
+    "BRK-B": "Berkshire Hathaway Inc."
+  }
+}

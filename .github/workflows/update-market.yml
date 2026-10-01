@@ -1,0 +1,148 @@
+name: Update market rankings
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0,20 9 * * 2-6'
+      timezone: Asia/Seoul
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: 'First US trade date to backfill (YYYY-MM-DD, optional)'
+        type: string
+      to_date:
+        description: 'Last US trade date (YYYY-MM-DD, optional)'
+        type: string
+      refresh:
+        description: 'Reprocess archived closing bundles and retain previous revisions'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketcap-data-and-pages
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    # Scheduled workflows use the default branch; restrict manual publication too.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    outputs:
+      collection_outcome: ${{ steps.collect.outcome }}
+      publication_id: ${{ steps.verify.outputs.publication_id }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install collector
+        run: |
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+      - name: Load persistent data
+        id: prepare
+        run: python scripts/data_branch.py prepare
+      - name: Discover all eligible US stocks and record closing market-cap rankings
+        id: collect
+        continue-on-error: true
+        env:
+          FROM_DATE: ${{ inputs.from_date }}
+          TO_DATE: ${{ inputs.to_date }}
+          REFRESH: ${{ inputs.refresh }}
+          PYTHONUNBUFFERED: '1'
+        shell: bash
+        run: |
+          args=(--data-dir .marketcap-data --allow-provisional)
+          if [[ -n "$FROM_DATE" ]]; then args+=(--from "$FROM_DATE"); fi
+          if [[ -n "$TO_DATE" ]]; then args+=(--to "$TO_DATE"); fi
+          if [[ "$REFRESH" == 'true' ]]; then args+=(--refresh); fi
+          python download.py "${args[@]}"
+      - name: Preserve snapshots, pending requests and failure status
+        if: always() && steps.prepare.outcome == 'success'
+        run: python scripts/data_branch.py persist
+      - name: Write run summary
+        if: always() && steps.prepare.outcome == 'success'
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              for filename in ('status.json',):
+                  path = Path('.marketcap-data') / filename
+                  status = json.loads(path.read_text()) if path.exists() else {'state': 'error'}
+                  summary.write(f'## {filename}\n\n')
+                  for key, value in status.items():
+                      summary.write(f'- **{key}**: `{value}`\n')
+          PY
+      - name: Export last validated data and current status
+        run: marketcap export --data-dir .marketcap-data
+      - name: Build site
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - name: Verify published data structure and CSVs
+        id: verify
+        run: |
+          python scripts/verify_site.py web/dist/data
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads(Path('web/dist/data/index.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"publication_id={data['publication_id']}\n")
+          PY
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: web/dist
+
+  deploy:
+    needs: collect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/configure-pages@v5
+      - name: Deploy validated snapshots and update status
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Verify live Pages data matches this run
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          PUBLICATION_ID: ${{ needs.collect.outputs.publication_id }}
+        run: python scripts/verify_site.py "${PAGE_URL%/}/data" --publication-id "$PUBLICATION_ID" --attempts 8
+
+  result:
+    if: always() && needs.collect.result != 'skipped'
+    needs: [collect, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report collection or deployment failure
+        env:
+          COLLECT_JOB: ${{ needs.collect.result }}
+          COLLECT_STEP: ${{ needs.collect.outputs.collection_outcome }}
+          DEPLOY_JOB: ${{ needs.deploy.result }}
+        run: |
+          test "$COLLECT_JOB" = success
+          test "$COLLECT_STEP" = success
+          test "$DEPLOY_JOB" = success
