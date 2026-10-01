@@ -6,7 +6,7 @@ from test_yahoo import OTHER, bundle, quote
 
 from marketcap.models import DataError
 from marketcap.pipeline import run
-from marketcap.providers.supplements import ETF_COLUMNS, etf_units, kis_rows
+from marketcap.providers.supplements import ETF_COLUMNS, STOCK_COLUMNS, etf_units, kis_rows
 from marketcap.providers.yahoo import YahooProvider, select_universe, ticker_capitalization
 from marketcap.storage import Store
 
@@ -69,12 +69,22 @@ def test_adr_without_english_suffix_and_etf_use_their_own_units(settings):
         "totalCount": 1,
         "data": [{"s": "AMEX:VOO", "d": ["VOO", "fund", "etf", 100, "USD", "AMEX"]}],
     }
+    data["stock_shares"] = {
+        "columns": STOCK_COLUMNS,
+        "totalCount": 2,
+        "data": [
+            {"s": "NASDAQ:ALPHA", "d": ["ALPHA", "stock", "common", 80, "USD", "NASDAQ"]},
+            {"s": "NYSE:TSM", "d": ["TSM", "dr", "", 5, "USD", "NYSE"]},
+        ],
+    }
     selected, listings, _ = select_universe(
         data, replace(settings, security_types=("CS", "ADR", "ETF"))
     )
     assert listings["TSM"]["security_type"] == "ADR"
     assert listings["TSM"]["display_name"] == "TSMC(ADR)"
     assert ticker_capitalization(selected["TSM"])["market_cap_usd"] == "2250.00"
+    assert ticker_capitalization(selected["ALPHA"])["market_cap_usd"] == "800.00"
+    assert ticker_capitalization(selected["ALPHA"])["shares_source"] == "TradingView"
     assert ticker_capitalization(selected["VOO"])["market_cap_usd"] == "70000.00"
     assert ticker_capitalization(selected["VOO"])["shares_source"] == "TradingView"
     assert "PREF" not in listings and "NOTE" not in listings

@@ -10,6 +10,14 @@ import httpx
 from marketcap.models import DataError, positive
 
 ETF_COLUMNS = ["name", "type", "subtype", "shares_outstanding", "currency", "exchange"]
+STOCK_COLUMNS = [
+    "name",
+    "type",
+    "subtype",
+    "total_shares_outstanding_current",
+    "currency",
+    "exchange",
+]
 
 
 def kis_rows(text: str) -> dict:
@@ -32,28 +40,41 @@ def kis_rows(text: str) -> dict:
     return result
 
 
-def etf_units(bundle: dict) -> dict:
-    if bundle.get("columns") != ETF_COLUMNS:
-        raise DataError("ETF shares response schema changed")
+def _units(bundle: dict, columns: list, *, etf: bool) -> dict:
+    if bundle.get("columns") != columns:
+        raise DataError("Ticker shares response schema changed")
     rows = bundle.get("data", [])
     if len(rows) != bundle.get("totalCount") or not rows:
-        raise DataError("Incomplete ETF shares universe")
+        raise DataError("Incomplete ticker shares universe")
     symbols, result = set(), {}
     for row in rows:
-        if row["s"] in symbols or len(row["d"]) != len(ETF_COLUMNS):
-            raise DataError("Duplicate or invalid ETF shares row")
+        if row["s"] in symbols or len(row["d"]) != len(columns):
+            raise DataError("Duplicate or invalid ticker shares row")
         symbols.add(row["s"])
         ticker, kind, subtype, shares, currency, exchange = row["d"]
-        if kind != "fund" or subtype != "etf" or currency != "USD" or exchange == "OTC":
+        supported = (
+            (kind == "fund" and subtype == "etf")
+            if etf
+            else (kind == "dr" or (kind == "stock" and subtype == "common"))
+        )
+        if not supported or currency != "USD" or exchange == "OTC":
             continue
         if shares is None:
             continue
-        shares = positive(shares, "ETF shares outstanding")
+        shares = positive(shares, "ticker shares outstanding")
         ticker = ticker.replace(".", "-")
         if ticker in result:
-            raise DataError(f"Ambiguous ETF ticker: {ticker}")
+            raise DataError(f"Ambiguous ticker: {ticker}")
         result[ticker] = str(shares)
     return result
+
+
+def etf_units(bundle: dict) -> dict:
+    return _units(bundle, ETF_COLUMNS, etf=True)
+
+
+def stock_units(bundle: dict) -> dict:
+    return _units(bundle, STOCK_COLUMNS, etf=False)
 
 
 def fetch_supplements(budget, include_etf: bool) -> dict:
@@ -79,17 +100,13 @@ def fetch_supplements(budget, include_etf: bool) -> dict:
         kis_rows(text)
         directories[market] = text
     result = {"kis_directories": directories}
-    if include_etf:
-        # This is the ETF-specific units field. Company shares and fund AUM
-        # are different concepts and cannot substitute for these units.
+
+    def fetch_units(columns, filters):
         rows, total = [], None
         while total is None or len(rows) < total:
             payload = {
-                "filter": [
-                    {"left": "type", "operation": "equal", "right": "fund"},
-                    {"left": "subtype", "operation": "equal", "right": "etf"},
-                ],
-                "columns": ETF_COLUMNS,
+                "filter": filters,
+                "columns": columns,
                 "sort": {"sortBy": "name", "sortOrder": "asc"},
                 "range": [len(rows), len(rows) + 1000],
             }
@@ -98,17 +115,39 @@ def fetch_supplements(budget, include_etf: bool) -> dict:
             ).json()
             count = page.get("totalCount")
             if not isinstance(count, int) or count <= 0 or (total is not None and count != total):
-                raise DataError("ETF shares universe changed during pagination")
+                raise DataError("Ticker shares universe changed during pagination")
             total = count
             if not page.get("data"):
-                raise DataError("ETF shares pagination ended early")
+                raise DataError("Ticker shares pagination ended early")
             rows.extend(page["data"])
-        result["etf_shares"] = {
-            "columns": ETF_COLUMNS,
+        return {
+            "columns": columns,
             "totalCount": total,
             "data": rows,
             "captured_at": datetime.now(UTC).isoformat(),
-            "source": "TradingView ETF shares outstanding",
+            "source": "TradingView ticker shares outstanding",
         }
+
+    result["stock_shares"] = fetch_units(
+        STOCK_COLUMNS,
+        [
+            {"left": "type", "operation": "in_range", "right": ["stock", "dr"]},
+            {
+                "left": "exchange",
+                "operation": "in_range",
+                "right": ["NASDAQ", "NYSE", "AMEX", "CBOE"],
+            },
+        ],
+    )
+    stock_units(result["stock_shares"])
+    if include_etf:
+        # ETF units use a different field from stock/ADR share-class shares.
+        result["etf_shares"] = fetch_units(
+            ETF_COLUMNS,
+            [
+                {"left": "type", "operation": "equal", "right": "fund"},
+                {"left": "subtype", "operation": "equal", "right": "etf"},
+            ],
+        )
         etf_units(result["etf_shares"])
     return result

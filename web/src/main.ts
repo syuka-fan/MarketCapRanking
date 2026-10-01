@@ -225,7 +225,7 @@ async function boot() {
       timeZone: 'Asia/Seoul', dateStyle: 'short', timeStyle: 'short',
     }).format(new Date(collectedAt))} KST 수집` : '갱신 시각 확인 중';
     $('method-text').textContent = `${index.scope}. ${index.method}.`;
-    if (!index.is_demo) $('method-text').textContent += ' 가격·주식수: Yahoo Finance, ETF 발행좌수 보완: TradingView, 한국어 이름·ADR 분류 보완: 한투 공개 종목 명부. 한투 앱과 시세·발행수 갱신 시점이 달라 순위가 다를 수 있습니다.';
+    if (!index.is_demo) $('method-text').textContent += ' 가격: Yahoo Finance, 티커별 발행수: TradingView 우선·Yahoo 보완, 한국어 이름·ADR 분류 보완: 한투 공개 종목 명부. 한투 앱과 시세·발행수 갱신 시점이 달라 순위가 다를 수 있습니다.';
     $('source').textContent = `${index.is_demo ? 'FICTIONAL DEMO' : 'YAHOO · TRADINGVIEW · KIS 명부'} · USD`;
     const messages = [];
     if (index.is_demo) messages.push('데모 미리보기 — 가상 종목과 합성 데이터입니다. 실제 주가·시가총액이 아닙니다.');

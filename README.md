@@ -8,7 +8,7 @@
 
 `티커별 시가총액 = 해당 티커 본장 가격 × 해당 티커 발행 주식수(ADR 수량 / ETF 좌수)`
 
-- Yahoo의 `regularMarketPrice`와 주식·ADR의 `sharesOutstanding`을 사용합니다. 회사 전체를 환산한 `marketCap`, `impliedSharesOutstanding`은 순위 산식에 사용하지 않습니다.
+- 가격은 Yahoo의 `regularMarketPrice`, 보통주·ADR의 발행수는 TradingView의 티커별 `total_shares_outstanding_current`를 우선 사용합니다. 누락되면 Yahoo의 `sharesOutstanding`으로 보완합니다. 회사 전체를 환산한 `marketCap`, `impliedSharesOutstanding`은 순위 산식에 사용하지 않습니다.
 - ETF 좌수는 TradingView의 ETF 전용 `shares_outstanding` 일괄 응답을 우선 사용하고, 없는 종목은 Yahoo가 제공한 해당 ETF의 `sharesOutstanding`을 사용합니다. 펀드 전체 순자산인 `netAssets`로 대신 계산하지 않습니다.
 - ADR의 발행수에 예탁 비율을 다시 곱하지 않습니다. USD로 거래되는 예탁증권 단위의 가격·수량으로 계산합니다.
 - 금액은 Decimal로 계산해 USD 센트 단위로 저장합니다. 같은 금액은 `1, 2, 2, 4` 공동순위입니다. 화면 표시용 반올림은 순위에 영향을 주지 않습니다.
@@ -22,7 +22,7 @@ NYSE·Nasdaq·NYSE American·NYSE Arca·Cboe BZX의 USD 보통주, ADR, ETF가 �
 
 1. Yahoo 주식 및 ETF screener를 티커 순으로 **마지막 페이지까지** 읽습니다. 고정 티커 목록이나 상위 N개 저장 제한이 없습니다.
 2. Nasdaq 공개 종목 명부의 거래소·ETF 표시·종목명과 대조합니다. 한국투자증권 공개 종목 마스터로 한국어 이름과 ADR 여부를 보완합니다. 마스터 파일은 시세나 시가총액 공급원이 아닙니다.
-3. TradingView ETF screener의 전체 페이지에서 상장좌수를 받아 ETF 가격과 연결합니다. 응답 원본은 가격 원본과 함께 보관합니다. 주식수·좌수는 수집 당시 공급자가 제공한 값이며 별도 공시 기준일이 제공되지 않을 수 있습니다.
+3. TradingView 주식·ADR·ETF screener의 전체 페이지에서 티커별 발행수와 ETF 상장좌수를 받아 가격과 연결합니다. 응답 원본은 가격 원본과 함께 보관합니다. 주식수·좌수는 수집 당시 공급자가 제공한 값이며 별도 공시 기준일이 제공되지 않을 수 있습니다.
 4. 가격·수량·통화·거래 시각을 검증한 티커 전체를 순위에 포함합니다. 누락 티커와 사유는 `coverage`에 남기고, 화면에 보통주·ADR·ETF별 포함 수와 전체 제외 수를 표시합니다.
 
 기본 검증 기준은 명부 대비 유효 티커 **98% 이상**, 최소 **1,000개**, 직전 기록 대비 **90% 이상**입니다. 기준에 못 미치거나 중복/불완전 페이지를 받으면 게시용 데이터를 저장하지 않습니다. 무료 공개 데이터에서 확인 가능한 범위의 순위이며 누락 없는 공식 전 시장 순위는 아닙니다.

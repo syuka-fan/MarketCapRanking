@@ -57,6 +57,7 @@ class Settings:
     def policy(self) -> dict:
         values = asdict(self)
         values["ranking_basis"] = "ticker_price_x_ticker_shares_outstanding_v2"
+        values["shares_priority"] = "tradingview_ticker_then_yahoo"
         return json.loads(
             json.dumps(
                 {

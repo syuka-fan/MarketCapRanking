@@ -20,7 +20,7 @@ from curl_cffi import requests
 
 from marketcap.calendar import NEW_YORK, latest_completed, sessions
 from marketcap.models import DataError, Settings, positive
-from marketcap.providers.supplements import etf_units, fetch_supplements, kis_rows
+from marketcap.providers.supplements import etf_units, fetch_supplements, kis_rows, stock_units
 from marketcap.storage import Store, atomic_json
 
 EXCHANGES = {
@@ -169,9 +169,19 @@ def select_universe(bundle: dict, settings: Settings) -> tuple[dict, dict, dict]
     }
     selected = {ticker: quote for ticker, quote in quotes.items() if ticker in eligible}
     units = etf_units(bundle["etf_shares"]) if "etf_shares" in bundle else {}
+    stocks = stock_units(bundle["stock_shares"]) if "stock_shares" in bundle else {}
+    units = {
+        ticker: value
+        for ticker, value in {**stocks, **units}.items()
+        if ticker in listings
+        and (
+            (listings[ticker]["security_type"] == "ETF" and ticker in units)
+            or (listings[ticker]["security_type"] != "ETF" and ticker in stocks)
+        )
+    }
     selected = {
         ticker: {**quote, "sharesOutstanding": units[ticker], "shares_source": "TradingView"}
-        if listings[ticker]["security_type"] == "ETF" and ticker in units
+        if ticker in units
         else quote
         for ticker, quote in selected.items()
     }
