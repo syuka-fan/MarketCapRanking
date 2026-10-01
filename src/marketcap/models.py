@@ -28,6 +28,7 @@ class Settings:
     minimum_instruments: int = 1000
     minimum_universe_ratio: float = 0.9
     minimum_quote_coverage: float = 0.98
+    minimum_closing_quote_coverage: float = 0.98
     company_names: dict[str, str] = field(default_factory=dict)
     identity_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -48,6 +49,8 @@ class Settings:
             raise DataError("Invalid universe coverage threshold")
         if not 0 < result.minimum_quote_coverage <= 1:
             raise DataError("Invalid quote coverage threshold")
+        if not 0 < result.minimum_closing_quote_coverage <= 1:
+            raise DataError("Invalid closing quote coverage threshold")
         if not result.security_types or set(result.security_types) - {"CS", "ADR", "ETF"}:
             raise DataError("Supported instruments are CS, ADR and ETF")
         if not result.exchanges or set(result.exchanges) - {"XNYS", "XNAS", "XASE", "ARCX", "BATS"}:

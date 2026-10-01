@@ -25,6 +25,7 @@ export interface Index {
   is_demo: boolean;
   source: string | null;
   coverage?: {
+    is_partial?: boolean;
     screened_tickers?: number;
     directory_eligible: number;
     quoted_eligible: number;

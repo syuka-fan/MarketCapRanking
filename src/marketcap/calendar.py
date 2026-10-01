@@ -36,6 +36,7 @@ def previous_session(day: date) -> date:
     return max(sessions(day - timedelta(days=45), day - timedelta(days=1)))
 
 
+@lru_cache(maxsize=128)
 def regular_session_open(now: datetime) -> bool:
     day = now.astimezone(NEW_YORK).date()
     schedule = mcal.get_calendar("NYSE").schedule(start_date=day, end_date=day)

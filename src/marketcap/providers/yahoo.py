@@ -18,7 +18,7 @@ import httpx
 import yfinance as yf
 from curl_cffi import requests
 
-from marketcap.calendar import NEW_YORK, latest_completed, sessions
+from marketcap.calendar import NEW_YORK, latest_completed, regular_session_open, sessions
 from marketcap.models import DataError, Settings, positive
 from marketcap.providers.supplements import etf_units, fetch_supplements, kis_rows, stock_units
 from marketcap.storage import Store, atomic_json
@@ -207,21 +207,42 @@ def coverage_by_type(listings: dict, valid: dict, settings: Settings) -> dict:
     }
 
 
-def validate_closed_quote(quote: dict, day: date, now: datetime) -> None:
+def validate_closed_quote(
+    quote: dict, day: date, now: datetime, daily_close: dict | None = None
+) -> None:
     symbol = quote.get("symbol", "unknown")
     if quote.get("currency") != "USD" or quote.get("quoteType") not in {"EQUITY", "ETF"}:
         raise DataError(f"{symbol}: unsupported currency or instrument type")
     if quote.get("marketState") not in {"POST", "POSTPOST", "PRE", "PREPRE", "CLOSED"}:
         raise DataError(f"{symbol}: regular session is still open; refusing intraday rankings")
-    timestamp = quote.get("regularMarketTime")
-    if not isinstance(timestamp, (int, float)):
-        raise DataError(f"{symbol}: regular-market timestamp is missing")
-    traded_at = datetime.fromtimestamp(timestamp, UTC)
     close = sessions(day, day).get(day)
-    if not close or now < close or traded_at.astimezone(NEW_YORK).date() != day:
+    if not close or now < close:
         raise DataError(f"{symbol}: regular-market quote does not match the target closing date")
-    if traded_at.timestamp() > close.timestamp() + 60:
-        raise DataError(f"{symbol}: regular-market timestamp is outside the closing session")
+    if daily_close is not None:
+        if (
+            latest_completed(now) != day
+            or regular_session_open(now)
+            or daily_close.get("trade_date") != str(day)
+            or daily_close.get("ticker") != symbol
+            or daily_close.get("currency") != "USD"
+            or daily_close.get("source") != "yahoo"
+            or daily_close.get("price_basis")
+            not in {"yahoo_regular_close", "yahoo_daily_close_split_adjusted_not_dividend_adjusted"}
+            or positive(daily_close.get("close"), "daily close")
+            != positive(quote.get("regularMarketPrice"), "closing price")
+        ):
+            raise DataError(f"{symbol}: daily close does not match this closing capture")
+    else:
+        timestamp = quote.get("regularMarketTime")
+        if not isinstance(timestamp, (int, float)):
+            raise DataError(f"{symbol}: regular-market timestamp is missing")
+        traded_at = datetime.fromtimestamp(timestamp, UTC)
+        if traded_at.astimezone(NEW_YORK).date() != day:
+            raise DataError(
+                f"{symbol}: regular-market quote does not match the target closing date"
+            )
+        if traded_at.timestamp() > close.timestamp() + 60:
+            raise DataError(f"{symbol}: regular-market timestamp is outside the closing session")
     positive(quote.get("regularMarketPrice"), f"{symbol} regular close")
     ticker_capitalization(quote)
 
@@ -239,6 +260,7 @@ class YahooProvider:
         self.current_day = None
         self._quotes = {}
         self.captured_universe = None
+        self.captured_closes = None
         self.force_live_day = None
 
     @property
@@ -298,7 +320,10 @@ class YahooProvider:
         if target != latest_completed(now):
             raise DataError("Yahoo cannot reconstruct past company caps; supply an archived bundle")
         universe = self.captured_universe or self.fetch_universe(require_closed=True)
-        return {"trade_date": day, **universe}
+        result = {"trade_date": day, **universe}
+        if self.captured_closes and self.captured_closes["trade_date"] == day:
+            result["closing_prices"] = self.captured_closes
+        return result
 
     def refresh_latest(self, day: str) -> None:
         self.force_live_day = day
@@ -399,11 +424,38 @@ class YahooProvider:
             raise DataError("Archived Yahoo bundle date mismatch")
         selected, listings, self.coverage = select_universe(bundle, self.settings)
         captured = datetime.fromisoformat(bundle["captured_at"])
+        closing_prices = {}
+        evidence = bundle.get("closing_prices")
+        if evidence is not None:
+            verified = datetime.fromisoformat(evidence["verified_at"])
+            target = date.fromisoformat(day)
+            if (
+                evidence.get("trade_date") != day
+                or evidence.get("universe_captured_at") != bundle["captured_at"]
+                or captured.tzinfo is None
+                or verified.tzinfo is None
+                or verified < captured
+                or latest_completed(captured) != target
+                or latest_completed(verified) != target
+                or regular_session_open(captured)
+                or regular_session_open(verified)
+            ):
+                raise DataError("Daily price evidence does not match the closing share capture")
+            closing_prices = {row["ticker"]: row for row in evidence["prices"]}
+            if len(closing_prices) != len(evidence["prices"]):
+                raise DataError("Duplicate ticker in closing price evidence")
         excluded = []
         validated = {}
         for ticker, quote in selected.items():
             try:
-                validate_closed_quote(quote, date.fromisoformat(day), captured)
+                daily_close = closing_prices.get(ticker)
+                if daily_close is not None:
+                    quote = {
+                        **quote,
+                        "regularMarketPrice": daily_close["close"],
+                        "closing_price_basis": daily_close["price_basis"],
+                    }
+                validate_closed_quote(quote, date.fromisoformat(day), captured, daily_close)
                 issuer_name(quote)
             except DataError as exc:
                 excluded.append({"ticker": ticker, "reason": str(exc)})
@@ -413,8 +465,18 @@ class YahooProvider:
         self.coverage["rankable_tickers"] = len(validated)
         self.coverage["by_type"] = coverage_by_type(listings, validated, self.settings)
         self.coverage["valid_quote_ratio"] = len(validated) / self.coverage["directory_eligible"]
+        self.coverage["is_partial"] = (
+            self.coverage["valid_quote_ratio"] < self.settings.minimum_quote_coverage
+        )
+        self.coverage["minimum_closing_quote_coverage"] = (
+            self.settings.minimum_closing_quote_coverage
+        )
         atomic_json(self.root / "coverage" / f"{day}.json", self.coverage)
-        if self.coverage["valid_quote_ratio"] < self.settings.minimum_quote_coverage:
+        if (
+            self.coverage["quoted_eligible"] / self.coverage["directory_eligible"]
+            < self.settings.minimum_quote_coverage
+            or self.coverage["valid_quote_ratio"] < self.settings.minimum_closing_quote_coverage
+        ):
             raise DataError(
                 f"Only {len(validated)}/{self.coverage['directory_eligible']} eligible tickers "
                 "have validated closing quotes; refusing incomplete market coverage"
@@ -472,7 +534,8 @@ class YahooProvider:
             "symbol": ticker,
             "from": day,
             "close": quote["regularMarketPrice"],
-            "regular_market_time": quote["regularMarketTime"],
+            "regular_market_time": quote.get("regularMarketTime"),
+            "price_basis": quote.get("closing_price_basis", "yahoo_regular_close"),
         }
 
     def details(self, ticker: str, day: str) -> dict:

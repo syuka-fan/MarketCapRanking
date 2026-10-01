@@ -8,7 +8,13 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from marketcap.calendar import NEW_YORK, latest_completed, previous_session, sessions
+from marketcap.calendar import (
+    NEW_YORK,
+    latest_completed,
+    previous_session,
+    regular_session_open,
+    sessions,
+)
 from marketcap.models import DataError, positive
 from marketcap.providers.yahoo import YahooProvider, select_universe
 from marketcap.storage import atomic_json, json_bytes
@@ -142,6 +148,7 @@ def collect_market_closes(
     counts are not inferred from the current universe.
     """
     now = now or datetime.now(UTC)
+    provider.captured_closes = None
     cutoff = latest_completed(now)
     end = end or cutoff
     start = start or end
@@ -270,6 +277,23 @@ def collect_market_closes(
             report["counts_by_date"] = {day: len(rows) for day, rows in daily.items()}
             report["state"] = "partial" if any(report["missing_by_date"].values()) else "ok"
             report["completed_at"] = datetime.now(UTC).isoformat()
+            captured = datetime.fromisoformat(bundle["captured_at"])
+            verified = datetime.fromisoformat(report["completed_at"])
+            if (
+                str(cutoff) in daily
+                and latest_completed(captured) == cutoff
+                and latest_completed(verified) == cutoff
+                and not regular_session_open(captured)
+                and not regular_session_open(verified)
+            ):
+                # Only pair this capture's share counts with its own completed
+                # session. Never attach historical backfill prices to today's shares.
+                provider.captured_closes = {
+                    "trade_date": str(cutoff),
+                    "universe_captured_at": bundle["captured_at"],
+                    "verified_at": report["completed_at"],
+                    "prices": list(daily[str(cutoff)].values()),
+                }
         except Exception as exc:
             report["state"] = "error"
             report["error"] = (

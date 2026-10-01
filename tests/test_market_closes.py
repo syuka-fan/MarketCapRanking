@@ -199,6 +199,95 @@ def test_future_request_rejected_before_network(tmp_path, settings, now, monkeyp
         collect_market_closes(provider, end=date(2026, 10, 1), now=now)
 
 
+def closing_evidence(data):
+    return {
+        "trade_date": "2026-09-30",
+        "universe_captured_at": data["captured_at"],
+        "verified_at": "2026-10-01T00:10:00+00:00",
+        "prices": [
+            {
+                "ticker": "ALPHA",
+                "trade_date": "2026-09-30",
+                "currency": "USD",
+                "source": "yahoo",
+                "close": "12",
+                "price_basis": "yahoo_daily_close_split_adjusted_not_dividend_adjusted",
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("timestamp", [1790712000, 1790799300])
+def test_dated_daily_close_pairs_with_same_closing_share_capture(
+    tmp_path, settings, now, monkeypatch, timestamp
+):
+    data = bundle()
+    data["quotes"][0]["regularMarketTime"] = timestamp
+    data["closing_prices"] = closing_evidence(data)
+    provider = YahooProvider(settings, tmp_path)
+    monkeypatch.setattr(provider, "fetch_bundle", lambda day: data)
+    run(provider, settings, tmp_path, now=now)
+    snapshot = Store(tmp_path).load(date(2026, 9, 30))
+    row = next(row for row in snapshot["rankings"] if row["ticker"] == "ALPHA")
+    assert row["market_cap_usd"] == "1200.00"
+    assert provider.close("ALPHA", "2026-09-30")["regular_market_time"] == timestamp
+    assert provider.close("ALPHA", "2026-09-30")["close"] == "12"
+    # The immutable archive retains evidence and can be replayed without live shares.
+    archived = json.loads((tmp_path / "bundles/2026-09-30.json").read_text())
+    assert archived["closing_prices"] == data["closing_prices"]
+    replay = YahooProvider(settings, tmp_path)
+    monkeypatch.setattr(replay, "fetch_bundle", lambda day: pytest.fail("Historical network call"))
+    assert run(replay, settings, tmp_path, now=now, refresh=True)["state"] == "unchanged"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"trade_date": "2026-09-29"},
+        {"universe_captured_at": "2026-10-01T01:00:00+00:00"},
+        {"verified_at": "2026-10-01T15:00:00+00:00"},
+    ],
+)
+def test_daily_price_evidence_cannot_reconstruct_old_caps(
+    tmp_path, settings, now, monkeypatch, change
+):
+    data = bundle()
+    data["closing_prices"] = {**closing_evidence(data), **change}
+    provider = YahooProvider(settings, tmp_path)
+    monkeypatch.setattr(provider, "fetch_bundle", lambda day: data)
+    with pytest.raises(DataError, match="closing share capture"):
+        run(provider, settings, tmp_path, now=now)
+    assert Store(tmp_path).dates() == []
+
+
+def test_partial_closing_coverage_keeps_missing_dates_and_complete_universe_checks(
+    tmp_path, settings, now, monkeypatch
+):
+    from dataclasses import replace
+
+    from test_yahoo import large_bundle
+
+    settings = replace(settings, minimum_closing_quote_coverage=0.9)
+    data = large_bundle()
+    for quote_row in data["quotes"][:20]:
+        quote_row["regularMarketTime"] = 1790712000
+    provider = YahooProvider(settings, tmp_path)
+    monkeypatch.setattr(provider, "fetch_bundle", lambda day: data)
+    run(provider, settings, tmp_path, now=now)
+    snapshot = Store(tmp_path).load(date(2026, 9, 30))
+    assert len(snapshot["rankings"]) == 283
+    assert snapshot["coverage"]["is_partial"] is True
+    assert len(snapshot["coverage"]["excluded_quotes"]) == 20
+    for quote_row in data["quotes"][:40]:
+        quote_row["regularMarketTime"] = 1790712000
+    with pytest.raises(DataError, match="incomplete market coverage"):
+        run(provider, settings, tmp_path, now=now)
+    assert Store(tmp_path).load(date(2026, 9, 30)) == snapshot
+    data["quotes"] = large_bundle()["quotes"][20:]
+    with pytest.raises(DataError, match="incomplete market coverage"):
+        run(provider, settings, tmp_path, now=now)
+
+
 @pytest.mark.parametrize("provisional", [True, False])
 def test_cli_intraday_always_saves_previous_close_before_optional_live_quotes(
     tmp_path, settings, monkeypatch, provisional

@@ -276,6 +276,7 @@ async function boot() {
     if (index.status.state === 'incomplete') messages.push('일부 과거 거래일의 원본이 없어 이력에 빈 구간이 있습니다. 확인된 거래일만 표시합니다.');
     if (index.coverage) {
       const coverage = index.coverage;
+      if (coverage.is_partial) messages.push('해당 거래일의 종가·발행수가 확인된 종목만 순위에 포함합니다. 미체결·미제공 종목이 있어 전체 시장 순위와 차이가 날 수 있습니다.');
       const excluded = coverage.excluded_quotes?.length ?? 0;
       messages.push(`대상 명부 ${number.format(coverage.directory_eligible)}개 티커 중 ${number.format(coverage.rankable_tickers ?? coverage.quoted_eligible)}개를 검증했습니다. 미제공 ${number.format(coverage.unquoted_tickers.length)}개, 가격·시총 미검증 ${number.format(excluded)}개는 순위에서 제외됩니다.`);
       if (coverage.by_type) messages.push(Object.entries(coverage.by_type).map(([kind, value]) => `${kind === 'CS' ? '보통주' : kind} ${number.format(value.ranked)}개`).join(' · ') + '를 각각 순위에 포함합니다.');
