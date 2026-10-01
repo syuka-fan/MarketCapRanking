@@ -236,13 +236,22 @@ class YahooProvider:
         """
         quotes = []
         expected = None
+        reported_totals = []
         while expected is None or len(quotes) < expected:
             response = self.screen(len(quotes))
             total = response.get("total")
             if not isinstance(total, int) or total <= 0:
                 raise DataError("Yahoo did not report the universe size")
+            reported_totals.append(total)
             if expected is not None and total != expected:
-                raise UniverseChanged("Yahoo universe changed during pagination")
+                # Intraday totals can vary between Yahoo responses. Continue to the
+                # current final page; exact final size, unique tickers and directory
+                # coverage are still required. Closing captures remain strict.
+                if require_closed or max(reported_totals) - min(reported_totals) > max(
+                    2, int(reported_totals[0] * 0.01)
+                ):
+                    raise UniverseChanged("Yahoo universe changed during pagination")
+                print(f"Yahoo provisional universe total: {expected} -> {total}", flush=True)
             expected = total
             page = response["quotes"]
             if not page:
@@ -261,6 +270,7 @@ class YahooProvider:
         return {
             "captured_at": datetime.now(UTC).isoformat(),
             "reported_total": expected,
+            "reported_totals": reported_totals,
             "http_requests": self.requests_made,
             "quotes": quotes,
             "nasdaqlisted": nasdaq,

@@ -294,6 +294,24 @@ def test_listing_change_retries_from_first_page_without_mixing_batches(
     monkeypatch.setattr(provider, "screen", screen)
     monkeypatch.setattr(provider, "_text", lambda url: "directory")
     monkeypatch.setattr("marketcap.providers.yahoo.time.sleep", lambda seconds: None)
-    result = provider.fetch_universe()
+    result = provider.fetch_universe(require_closed=True)
     assert offsets == [0, 1, 0]
     assert [q["symbol"] for q in result["quotes"]] == ["ALPHA", "ALPHB", "BETA"]
+
+
+def test_intraday_small_total_change_still_requires_exact_final_size_and_unique_tickers(
+    tmp_path, settings, monkeypatch
+):
+    provider = YahooProvider(replace(settings, max_retries=0), tmp_path)
+    pages = {
+        0: {"total": 2, "quotes": [quote()]},
+        1: {"total": 3, "quotes": [quote("ALPHB"), quote("BETA")]},
+    }
+    monkeypatch.setattr(provider, "screen", lambda offset: pages[offset])
+    monkeypatch.setattr(provider, "_text", lambda url: "directory")
+    result = provider.fetch_universe()
+    assert result["reported_totals"] == [2, 3]
+    assert len(result["quotes"]) == result["reported_total"] == 3
+    pages[1]["quotes"][0] = quote()
+    with pytest.raises(DataError, match="Duplicate or incomplete"):
+        provider.fetch_universe()
