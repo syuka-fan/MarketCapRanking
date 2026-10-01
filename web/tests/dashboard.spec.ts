@@ -1,4 +1,7 @@
 import { expect, test } from '@playwright/test';
+import { createMarketFixture, mockMarket } from './fixtures/market';
+
+test.beforeEach(async ({ page }) => { await mockMarket(page); });
 
 test('fictional preview supports search, multiple tickers, dates and comparison', async ({ page }) => {
   const errors: string[] = [];
@@ -34,8 +37,7 @@ test('empty data shows an honest empty state', async ({ page }) => {
 
 test('failed updates retain last data and show failure', async ({ page }) => {
   await page.route('**/data/index.json', async route => {
-    const response = await route.fetch();
-    const data = await response.json();
+    const data = createMarketFixture().index;
     data.status.state = 'error';
     await route.fulfill({ json: data });
   });
@@ -55,8 +57,7 @@ test('mobile viewport keeps the page within its width', async ({ page }) => {
 
 test('provisional quotes are labeled and excluded from the closing chart', async ({ page }) => {
   await page.route('**/data/index.json', async route => {
-    const response = await route.fetch();
-    const data = await response.json();
+    const data = createMarketFixture().index;
     data.is_demo = false;
     data.provisional_date = data.dates.at(-1);
     data.provisional_at = '2026-09-30T15:00:00Z';
@@ -73,4 +74,21 @@ test('provisional quotes are labeled and excluded from the closing chart', async
   await page.locator('#date').selectOption('2026-09-29');
   await expect(page.locator('#price-heading')).toHaveText('본장 종가');
   await expect(page.locator('#notice')).not.toContainText('장중·잠정 데이터');
+});
+
+test('historical prices are downloadable without inventing historical ranks', async ({ page }) => {
+  await page.route('**/data/index.json', async route => {
+    const data = createMarketFixture().index;
+    data.closed_dates = [];
+    data.axis_dates = [];
+    data.provisional_date = data.dates.at(-1);
+    data.price_dates = ['2026-09-29', '2026-09-30'];
+    data.close_history_file = 'close-history.csv';
+    await route.fulfill({ json: data });
+  });
+  await page.goto('/');
+  await expect(page.locator('#close-history')).toContainText('종가 2거래일');
+  await expect(page.locator('#close-history-download')).toHaveAttribute('href', './data/close-history.csv');
+  await expect(page.locator('#stat-days')).toHaveText('0');
+  await expect(page.locator('#chart-empty')).toContainText('종가 2거래일은 CSV로 제공');
 });

@@ -175,7 +175,9 @@ def run(
     start: date | None = None,
     end: date | None = None,
     refresh: bool = False,
+    archives_only: bool = False,
 ) -> dict:
+    daily_update = start is None and end is None and not refresh and not archives_only
     frozen_clock = now is not None
     now = now or datetime.now(UTC)
     store = Store(root)
@@ -204,22 +206,27 @@ def run(
             target_end = end or latest
             if target_end > latest:
                 raise DataError("Requested end date has not completed its regular session")
-            target_start = start or (dates[0] if dates else target_end)
+            target_start = start or target_end
             if target_start > target_end:
                 raise DataError("Start date must be on or before end date")
             targets = list(sessions(target_start, target_end))
             status["unrecoverable_dates"] = []
             for day in targets:
-                if day in dates and not refresh:
+                update_latest = daily_update and day == latest
+                if day in dates and not refresh and not update_latest:
                     continue
                 if (
                     getattr(provider, "latest_only", False)
-                    and day != latest
+                    and (day != latest or archives_only)
                     and not (root / "bundles" / f"{day}.json").exists()
                 ):
                     status["unrecoverable_dates"].append(str(day))
                     continue
-                snapshot, raw = collect_day(provider, settings, store, day, now, refresh)
+                if update_latest and hasattr(provider, "refresh_latest"):
+                    provider.refresh_latest(str(day))
+                snapshot, raw = collect_day(
+                    provider, settings, store, day, now, refresh or update_latest
+                )
                 if not frozen_clock:
                     snapshot["collected_at"] = datetime.now(UTC).isoformat()
                 if store.save(snapshot, raw):

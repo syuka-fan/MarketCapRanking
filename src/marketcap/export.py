@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from marketcap.calendar import previous_session, sessions
+from marketcap.market_closes import export_closes
 from marketcap.storage import Store, atomic_json
 
 
@@ -41,6 +42,32 @@ def _export(root: Path, destination: Path, db: sqlite3.Connection) -> None:
         }
     )
     destination.mkdir(parents=True, exist_ok=True)
+    price_dates = export_closes(root, destination)
+    close_history_hash = (
+        hashlib.sha256((destination / "close-history.csv").read_bytes()).hexdigest()
+        if price_dates
+        else None
+    )
+    close_status_path = root / "close-status.json"
+    close_status = json.loads(close_status_path.read_text()) if close_status_path.exists() else {}
+    close_summary = {
+        key: close_status[key]
+        for key in (
+            "state",
+            "attempted_at",
+            "completed_at",
+            "start_date",
+            "end_date",
+            "requested_tickers",
+            "processed_tickers",
+            "counts_by_date",
+            "error",
+        )
+        if key in close_status
+    }
+    close_summary["missing_counts_by_date"] = {
+        day: len(tickers) for day, tickers in close_status.get("missing_by_date", {}).items()
+    }
     instrument_index: dict[str, dict] = {}
     prior_day = None
     previous_ranks: dict[str, int] = {}
@@ -128,16 +155,28 @@ def _export(root: Path, destination: Path, db: sqlite3.Connection) -> None:
         {
             "schema_version": 2,
             "publication_id": hashlib.sha256(
-                json.dumps({"status": status, "latest": latest}, sort_keys=True).encode()
+                json.dumps(
+                    {
+                        "status": status,
+                        "latest": latest,
+                        "closing_prices": close_summary,
+                        "close_history_sha256": close_history_hash,
+                    },
+                    sort_keys=True,
+                ).encode()
             ).hexdigest(),
             "dates": [str(d) for d in dates],
             "closed_dates": [str(d) for d in closed_dates],
+            "price_dates": price_dates,
+            "close_history_file": "close-history.csv" if price_dates else None,
+            "close_history_sha256": close_history_hash,
+            "close_status": close_summary,
             "provisional_date": provisional["trade_date"] if provisional else None,
             "provisional_at": provisional["collected_at"] if provisional else None,
             "axis_dates": [str(d) for d in axis_dates],
             "status": status,
             "is_demo": latest["is_demo"] if latest else False,
-            "source": latest["source"] if latest else None,
+            "source": latest["source"] if latest else "yahoo" if price_dates else None,
             "coverage": latest.get("coverage") if latest else None,
             "method": (
                 "장중·잠정 티커별 가격 × 해당 티커 발행수 (종가 이력에서 제외)"
@@ -145,6 +184,8 @@ def _export(root: Path, destination: Path, db: sqlite3.Connection) -> None:
                 else "티커별 본장 종가 × 해당 티커 발행수 (보통주·ADR·ETF, 티커 병합 없음)"
                 if latest and latest["source"] == "yahoo"
                 else "가상 데이터의 티커별 시가총액"
+                if latest and latest["is_demo"]
+                else "확인된 종가 이력 (시가총액·순위 원본 미확인)"
             ),
             "scope": f"{scope} / Yahoo·Nasdaq 명부에서 확인되는 USD 보통주·ADR·ETF",
             "instruments": list(instrument_index.values()),

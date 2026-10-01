@@ -238,6 +238,8 @@ class YahooProvider:
         self.bundle = None
         self.current_day = None
         self._quotes = {}
+        self.captured_universe = None
+        self.force_live_day = None
 
     @property
     def requests_made(self):
@@ -295,7 +297,12 @@ class YahooProvider:
         target = date.fromisoformat(day)
         if target != latest_completed(now):
             raise DataError("Yahoo cannot reconstruct past company caps; supply an archived bundle")
-        return {"trade_date": day, **self.fetch_universe(require_closed=True)}
+        universe = self.captured_universe or self.fetch_universe(require_closed=True)
+        return {"trade_date": day, **universe}
+
+    def refresh_latest(self, day: str) -> None:
+        self.force_live_day = day
+        self.current_day = None
 
     def fetch_universe(self, *, require_closed: bool = False) -> dict:
         equities = self._stable_universe(require_closed=require_closed)
@@ -383,7 +390,11 @@ class YahooProvider:
         if self.current_day == day:
             return
         path = self.root / "bundles" / f"{day}.json"
-        bundle = json.loads(path.read_text()) if path.exists() else self.fetch_bundle(day)
+        bundle = (
+            json.loads(path.read_text())
+            if path.exists() and self.force_live_day != day
+            else self.fetch_bundle(day)
+        )
         if bundle.get("trade_date") != day:
             raise DataError("Archived Yahoo bundle date mismatch")
         selected, listings, self.coverage = select_universe(bundle, self.settings)

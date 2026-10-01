@@ -32,14 +32,15 @@ def test_multiple_tickers_have_separate_ranks_and_after_hours_is_ignored(
         assert {r["trade_date"] for r in reader} == {"2026-09-30"}
 
 
-def test_repeat_is_noop_and_refresh_keeps_audited_revisions(tmp_path, provider, settings, now):
+def test_daily_repeat_refetches_and_keeps_audited_revisions(tmp_path, provider, settings, now):
     run(provider, settings, tmp_path, now=now)
     count = len(provider.calls)
     assert run(provider, settings, tmp_path, now=now)["state"] == "unchanged"
-    assert len(provider.calls) == count
+    assert len(provider.calls) > count
+    assert len(list((tmp_path / "snapshots/2026-09-30/revisions").iterdir())) == 1
     assert run(provider, settings, tmp_path, now=now, refresh=True)["state"] == "unchanged"
     provider.price_offset = 1
-    run(provider, settings, tmp_path, now=now, refresh=True)
+    run(provider, settings, tmp_path, now=now)
     assert len(list((tmp_path / "snapshots/2026-09-30/revisions").iterdir())) == 2
 
 
@@ -60,7 +61,9 @@ def test_detect_and_recover_internal_gaps(tmp_path, provider, settings, now):
     run(provider, settings, tmp_path, now=now, start=date(2026, 9, 28), end=date(2026, 9, 28))
     run(provider, settings, tmp_path, now=now, start=date(2026, 9, 30))
     assert Store(tmp_path).dates() == [date(2026, 9, 28), date(2026, 9, 30)]
-    status = run(provider, settings, tmp_path, now=now)
+    # Daily execution touches only the last session; backfill is explicit.
+    assert run(provider, settings, tmp_path, now=now)["updated_dates"] == []
+    status = run(provider, settings, tmp_path, now=now, start=date(2026, 9, 28))
     assert status["updated_dates"] == ["2026-09-29"]
 
 
@@ -123,7 +126,7 @@ def test_export_recomputes_changes_after_backfill_and_keeps_gaps(tmp_path, provi
     assert index["axis_dates"] == ["2026-09-28", "2026-09-29", "2026-09-30"]
     day = json.loads((output / "days/2026-09-30.json").read_text())
     assert all(r["change_state"] == "gap" for r in day["rows"])
-    run(provider, settings, root, now=now)
+    run(provider, settings, root, now=now, start=date(2026, 9, 28))
     export_site(root, output)
     day = json.loads((output / "days/2026-09-30.json").read_text())
     assert all(r["rank_change"] == 0 for r in day["rows"])

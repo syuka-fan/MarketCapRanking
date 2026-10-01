@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from marketcap.closes import YahooHistory, download_closes, read_symbols
 from marketcap.demo import generate
 from marketcap.export import export_site
 from marketcap.inspection import inspect_universe
+from marketcap.market_closes import collect_market_closes
 from marketcap.models import DataError, Settings
 from marketcap.pipeline import run
 from marketcap.providers.yahoo import YahooProvider
@@ -36,6 +38,16 @@ def main() -> int:
     closes.add_argument("--start", type=date.fromisoformat, help="Inclusive US trade date")
     closes.add_argument("--end", type=date.fromisoformat, help="Inclusive US trade date")
     closes.add_argument("--refresh", action="store_true", help="Re-download all stored history")
+    market_closes = commands.add_parser(
+        "collect-closes", help="Refresh all US tickers for the last close; explicit dates backfill"
+    )
+    market_closes.add_argument("--data-dir", type=Path, default=Path("data/ticker-v2"))
+    market_closes.add_argument("--settings", type=Path, default=Path("config/settings.json"))
+    market_closes.add_argument("--from", dest="start", type=date.fromisoformat)
+    market_closes.add_argument("--to", dest="end", type=date.fromisoformat)
+    market_closes.add_argument("--archive", type=Path, help="Listing-discovery bundle for backfill")
+    market_closes.add_argument("--resume", action="store_true", help="Reuse saved backfill batches")
+    market_closes.add_argument("--max-requests", type=int, help="One-run HTTP budget override")
     collect = commands.add_parser(
         "collect", help="Collect the latest closed session; recover archives"
     )
@@ -43,6 +55,8 @@ def main() -> int:
     collect.add_argument("--settings", type=Path, default=Path("config/settings.json"))
     collect.add_argument("--from", dest="start", type=date.fromisoformat)
     collect.add_argument("--to", dest="end", type=date.fromisoformat)
+    collect.add_argument("--resume", action="store_true", help="Reuse saved backfill batches")
+    collect.add_argument("--max-requests", type=int, help="One-run HTTP budget override")
     collect.add_argument(
         "--refresh", action="store_true", help="Reprocess archived closing bundles"
     )
@@ -83,14 +97,35 @@ def main() -> int:
             )
             print(json.dumps(result, ensure_ascii=False))
             return 1 if result["state"] == "incomplete" else 0
-        if args.command == "collect":
+        if args.command in {"collect", "collect-closes"}:
             settings = Settings.read(args.settings)
+            if args.max_requests is not None:
+                if args.max_requests < 1:
+                    raise DataError("Request budget must be positive")
+                settings = replace(settings, max_requests_per_run=args.max_requests)
+            if args.resume and not args.start:
+                raise DataError("--resume requires an explicit --from backfill date")
             provider = YahooProvider(settings, args.data_dir)
-            if (
-                args.allow_provisional
-                and not (args.start or args.end or args.refresh)
-                and regular_session_open(datetime.now(UTC))
-            ):
+            archive = getattr(args, "archive", None)
+            if archive and not args.start:
+                raise DataError("--archive requires an explicit --from backfill date")
+            replay = args.command == "collect" and args.refresh
+            prices = (
+                None
+                if replay
+                else collect_market_closes(
+                    provider,
+                    start=args.start,
+                    end=args.end,
+                    bundle=json.loads(archive.read_text()) if archive else None,
+                    resume=args.resume,
+                )
+            )
+            if args.command == "collect-closes":
+                print(json.dumps(prices, ensure_ascii=False))
+                return 0
+            is_open = regular_session_open(datetime.now(UTC))
+            if args.allow_provisional and not (args.start or args.end or args.refresh) and is_open:
                 result = collect_provisional(provider)
             else:
                 result = run(
@@ -100,7 +135,15 @@ def main() -> int:
                     start=args.start,
                     end=args.end,
                     refresh=args.refresh,
+                    archives_only=is_open,
                 )
+            if prices:
+                result["closing_prices"] = prices
+                # Missing historical share counts are expected during price backfills.
+                # Keep the precise missing ranking dates without inventing caps.
+                if result["state"] == "incomplete" and result.get("unrecoverable_dates"):
+                    result["state"] = "partial"
+                atomic_json(args.data_dir / "status.json", result)
             print(json.dumps(result, ensure_ascii=False))
             return 1 if result["state"] == "incomplete" else 0
         if args.command == "probe":

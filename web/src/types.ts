@@ -15,6 +15,9 @@ export interface Index {
   schema_version: number;
   dates: string[];
   closed_dates?: string[];
+  price_dates?: string[];
+  close_history_file?: string | null;
+  close_status?: { state?: string; missing_counts_by_date?: Record<string, number> };
   provisional_date?: string | null;
   provisional_at?: string | null;
   axis_dates: string[];

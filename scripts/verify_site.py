@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import math
@@ -20,7 +21,7 @@ def verify(location: str, publication_id: str | None = None) -> dict:
             )
             with urlopen(request, timeout=30) as response:
                 return response.read().decode()
-        return (Path(location) / filename).read_text()
+        return (Path(location) / filename).read_bytes().decode()
 
     index = json.loads(read("index.json"))
     assert index["schema_version"] == 2, "Unsupported schema"
@@ -73,11 +74,30 @@ def verify(location: str, publication_id: str | None = None) -> dict:
     if provisional:
         assert all(r["is_final_close"] == "False" for r in rankings + prices)
         assert "price" in prices[0] and "close" not in prices[0], "Misleading provisional CSV"
+    price_dates = index.get("price_dates", [])
+    closing_rows = 0
+    if price_dates:
+        content = read("close-history.csv")
+        assert hashlib.sha256(content.encode()).hexdigest() == index["close_history_sha256"], (
+            "Closing-price CSV differs from this publication"
+        )
+        assert price_dates == sorted(set(price_dates)), "Duplicate or unordered price dates"
+        seen = set()
+        for row in csv.DictReader(io.StringIO(content)):
+            key = (row["trade_date"], row["ticker"])
+            assert key not in seen, "Duplicate closing price"
+            seen.add(key)
+            assert row["trade_date"] in price_dates, "Unexpected closing-price date"
+            assert row["currency"] == "USD" and row["source"] == "yahoo"
+            assert math.isfinite(float(row["close"])) and float(row["close"]) > 0
+            closing_rows += 1
     return {
         "state": "ok",
         "latest_date": dates[-1],
         "provisional": bool(provisional),
         "closing_days": len(closed),
+        "price_days": len(price_dates),
+        "closing_price_rows": closing_rows,
         "instruments": len(rows),
         "tickers": len(seen_tickers),
         "publication_id": index.get("publication_id"),

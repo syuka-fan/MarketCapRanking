@@ -4,6 +4,8 @@
 
 사이트: https://syuka-fan.github.io/MarketCapRanking/
 
+순위 그래프는 상위 **10·20·30·40·50개**를 선택하거나 개별 종목을 최대 50개까지 비교할 수 있습니다. 종목 수에 맞춰 그래프 높이를 조절하고, 색상·선 모양과 종목 이름의 마우스/키보드 강조로 구분합니다. 긴 선택 목록과 거래일 상세 정보는 내부 스크롤로 확인합니다.
+
 ## 순위 산정
 
 `티커별 시가총액 = 해당 티커 본장 가격 × 해당 티커 발행 주식수(ADR 수량 / ETF 좌수)`
@@ -31,11 +33,22 @@ NYSE·Nasdaq·NYSE American·NYSE Arca·Cboe BZX의 USD 보통주, ADR, ETF가 �
 
 ## 종가와 장중 데이터
 
-- 본장 종료 후부터 다음 본장 시작 전까지 최신 거래일의 종가를 수집합니다. 뉴욕 기준 거래일과 본장 타임스탬프를 확인하고 시간외 가격은 사용하지 않습니다.
-- `--allow-provisional`은 본장이 열린 동안 `provisional.json`을 갱신합니다. 화면과 CSV에 **장중·잠정**으로 표시하며 확정 거래일 수와 종가 그래프에 넣지 않습니다.
+- 기본 실행은 **가장 최근에 마감된 미국 거래일 하루의 종가를 매번 다시 조회**합니다. 이미 저장된 날짜도 정정을 반영하며, 동일한 결과를 중복 저장하지 않습니다. 주말·휴장일·장중에는 직전 마감일을 대상으로 합니다. 과거 날짜 보충은 명시적으로 기간을 지정할 때만 실행합니다.
+- 종가 수집은 현재 명부의 전체 보통주·ADR·ETF를 대상으로 합니다. 날짜가 확인되는 본장 가격 또는 직전 본장 종가를 우선 사용하고, 누락 종목은 Yahoo 일봉 API로 20개씩 조회합니다. 장중·시간외 값과 아직 마감되지 않은 날짜는 제외합니다. 현재 명부 기준이므로 과거에 상장폐지된 종목까지 복원하는 자료는 아닙니다.
+- `--allow-provisional`은 마지막 마감일 종가를 먼저 수집한 뒤 본장이 열린 동안 `provisional.json`도 갱신합니다. 화면과 CSV에 **장중·잠정**으로 표시하며 확정 거래일 수와 종가 그래프에 넣지 않습니다.
 - 잠정 화면은 최근 14일 이내의 마지막 체결을 허용합니다. 당일 체결이 아니면 가격 옆과 CSV의 `quote_date`에 체결일을 표시합니다. 확정 종가는 해당 거래일의 가격만 허용합니다.
-- 전일 가격만으로 전일 전체 시가총액을 역산하지 않습니다. 종가 기록은 실제 장 마감 원본을 수집한 날부터 시작합니다.
-- NYSE 달력으로 휴장일·서머타임·조기 폐장을 처리합니다. 누락한 과거 날짜에 보관 원본이 없으면 `unrecoverable_dates`로 보고하고 그래프에 공백을 남깁니다.
+- 과거 종가는 시가총액·순위와 독립적으로 `closing-prices/`에 보관하고 사이트의 **전체 종목 종가 이력 CSV**로 제공합니다. 일봉 가격은 Yahoo의 주식분할 소급 조정이 적용될 수 있으며, 가격 기준은 각 행에 기록합니다. 미제공 날짜는 채워 넣지 않고 `close-status.json`에 날짜별 누락 종목을 기록합니다.
+- 당시 발행주식수가 확인되는 마감 원본이 있는 경우만 과거 시가총액·순위로 저장합니다. 현재 발행수를 과거 종가에 곱해 순위를 만들지 않습니다. NYSE 달력으로 휴장일·서머타임·조기 폐장을 처리하고, 시총 원본이 없는 날짜는 `unrecoverable_dates`와 그래프 공백으로 남깁니다.
+
+전체 종목의 최근 2주 종가를 한 번 보충하는 예시입니다. 아래 기간에는 마감된 10개 거래일이 있습니다. 이후 날짜를 생략한 실행은 마지막 마감일 하루만 갱신합니다.
+
+```bash
+marketcap collect-closes --data-dir data/ticker-v2 --from 2026-09-17 --to 2026-09-30 --max-requests 800
+marketcap collect --data-dir data/ticker-v2 --allow-provisional
+marketcap export --data-dir data/ticker-v2
+```
+
+보충 수집이 중단되면 같은 기간에 `--resume`을 붙여 저장된 요청부터 이어갑니다. `--archive <bundle.json>`은 보충 수집의 종목 명부를 고정할 때만 사용합니다. 일상 실행에는 둘 다 사용하지 않습니다. 2주치 전체 수집은 분당 20회 속도를 유지하며 약 30분이 걸리고, 명시적인 `--max-requests 800`은 해당 실행의 총 요청 한도만 늘립니다.
 
 ## 로컬 실행
 
@@ -62,11 +75,11 @@ marketcap inspect-universe --data-dir data/ticker-v2
 marketcap inspect-universe --archive data/ticker-v2/inspection/universe.json
 ```
 
-가상 기업 24개의 **26개 티커를 각각 순위로 계산한** 약 1년의 화면 테스트 데이터도 제공합니다. 실데이터 대신 자동 게시하지 않습니다.
+가상 기업 24개의 **26개 티커를 각각 순위로 계산한** 약 1년의 수집·내보내기 테스트 데이터도 제공합니다. 테스트 출력은 별도 경로에 보관하며, 웹에서 사용하는 `web/public/data`에는 실제 수집 데이터만 내보냅니다.
 
 ```bash
 marketcap demo --data-dir demo-data/ticker-v2
-marketcap export --data-dir demo-data/ticker-v2
+marketcap export --data-dir demo-data/ticker-v2 --output demo-data/site
 ```
 
 ## 데이터 보관과 스키마
@@ -76,6 +89,10 @@ marketcap export --data-dir demo-data/ticker-v2
 ```text
 ticker-v2/
   status.json
+  close-status.json
+  closing-prices/YYYY-MM-DD.json
+  closing-prices/revisions/<거래일>/<내용 SHA-256>.json
+  close-requests/<시작일>_<종료일>/<배치 해시>.json
   provisional.json
   provisional-bundle.json
   coverage/YYYY-MM-DD.json
@@ -111,7 +128,7 @@ marketcap download-closes --tickers AAPL,MSFT,GOOG,GOOGL
 
 Pages Source를 **GitHub Actions**로 설정합니다. `main` 푸시와 수동 실행으로 수집·검증·배포합니다. 데이터는 별도 `data` 브랜치에 보관합니다.
 
-예약은 **한국 시간 화~토 09:00, 09:20**입니다. 두 번째 실행에서 이미 저장된 종가가 있으면 API 재조회나 중복 저장 없이 보존 상태를 검증합니다. GitHub 예약 실행은 지연되거나 누락될 수 있습니다.
+예약은 **한국 시간 화~토 09:00, 09:20**입니다. 두 번째 실행도 마지막 마감일 종가를 재조회하여 정정을 반영합니다. 이전 날짜는 다시 받지 않고 동일한 값은 중복 저장하지 않습니다. 수동 실행에서 `from_date`를 지정하면 과거 종가 보충에 필요한 실행당 요청 한도를 800회로 늘립니다. `resume_backfill`은 같은 기간의 중단된 보충 수집을 이어받습니다. GitHub 예약 실행은 지연되거나 누락될 수 있습니다.
 
 ```yaml
 schedule:
@@ -128,8 +145,8 @@ ruff check src tests scripts download.py
 ruff format --check src tests scripts download.py
 pytest
 marketcap demo --data-dir demo-data/ticker-v2
-marketcap export --data-dir demo-data/ticker-v2
-python scripts/verify_site.py web/public/data
+marketcap export --data-dir demo-data/ticker-v2 --output demo-data/site
+python scripts/verify_site.py demo-data/site
 cd web
 npm ci
 npm run build
@@ -137,6 +154,6 @@ npx playwright install chromium
 npm test
 ```
 
-CI는 티커별 계산·ADR/ETF 포함·발행수 누락·전체 페이지 조회·날짜·중복 실행·과거 원본 복구·실패 보존과 브라우저 검색·개별 티커 비교·모바일 화면을 검증합니다.
+CI는 티커별 계산·ADR/ETF 포함·발행수 누락·전체 페이지 조회·날짜·중복 실행·과거 원본 복구·실패 보존과 브라우저 검색·개별 티커 비교·모바일 화면을 검증합니다. 브라우저 테스트의 가상 데이터는 `web/tests/fixtures/market.ts`에서 요청 응답으로만 주입하며 실제 데이터 파일을 덮어쓰지 않습니다. 60개 가상 종목의 순위 교차·긴 이름·누락 이력으로 10~50개 비교, PC/모바일 너비, 상세 정보 스크롤, 단일 거래일을 확인하고 `web/test-results`에 화면 캡처를 남깁니다. 게시 workflow는 `is_demo: true`인 데이터를 거부합니다.
 
 데이터 출처: [Yahoo/yfinance](https://github.com/ranaroussi/yfinance), [Nasdaq 공개 명부](https://www.nasdaqtrader.com/trader.aspx?id=symboldirdefs), [한투 종목 마스터 정의](https://github.com/koreainvestment/open-trading-api/blob/main/stocks_info/overseas_stock_code.py), [TradingView ETF 발행좌수 정의](https://www.tradingview.com/support/solutions/43000748391-shares-outstanding/). 공개 데이터 접근과 재배포에는 각 제공자의 이용 조건이 적용됩니다.

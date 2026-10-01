@@ -34,7 +34,7 @@ def collect_provisional(provider: YahooProvider, now: datetime | None = None) ->
         try:
             if not regular_session_open(now):
                 raise DataError("Provisional collection requires an open regular session")
-            bundle = provider.fetch_universe()
+            bundle = provider.captured_universe or provider.fetch_universe()
             atomic_json(root / "inspection" / "provisional-bundle.json", bundle)
             captured = datetime.fromisoformat(bundle["captured_at"])
             day = captured.astimezone(NEW_YORK).date()

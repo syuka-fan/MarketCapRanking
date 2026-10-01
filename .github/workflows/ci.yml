@@ -35,8 +35,8 @@ jobs:
       - name: Generate fictional test data
         run: |
           marketcap demo
-          marketcap export --data-dir demo-data
-          python scripts/verify_site.py web/public/data
+          marketcap export --data-dir demo-data --output demo-data/site
+          python scripts/verify_site.py demo-data/site
       - name: Build and test browser
         working-directory: web
         run: |

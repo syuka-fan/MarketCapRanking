@@ -18,6 +18,10 @@ on:
         description: 'Reprocess archived closing bundles and retain previous revisions'
         type: boolean
         default: false
+      resume_backfill:
+        description: 'Resume saved historical closing-price requests (requires from_date)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,7 +35,7 @@ jobs:
     # Scheduled workflows use the default branch; restrict manual publication too.
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     permissions:
       contents: write
     outputs:
@@ -63,13 +67,15 @@ jobs:
           FROM_DATE: ${{ inputs.from_date }}
           TO_DATE: ${{ inputs.to_date }}
           REFRESH: ${{ inputs.refresh }}
+          RESUME_BACKFILL: ${{ inputs.resume_backfill }}
           PYTHONUNBUFFERED: '1'
         shell: bash
         run: |
           args=(--data-dir .marketcap-data/ticker-v2 --allow-provisional)
-          if [[ -n "$FROM_DATE" ]]; then args+=(--from "$FROM_DATE"); fi
+          if [[ -n "$FROM_DATE" ]]; then args+=(--from "$FROM_DATE" --max-requests 800); fi
           if [[ -n "$TO_DATE" ]]; then args+=(--to "$TO_DATE"); fi
           if [[ "$REFRESH" == 'true' ]]; then args+=(--refresh); fi
+          if [[ "$RESUME_BACKFILL" == 'true' ]]; then args+=(--resume); fi
           python download.py "${args[@]}"
       - name: Preserve snapshots, pending requests and failure status
         if: always() && steps.prepare.outcome == 'success'
@@ -81,7 +87,7 @@ jobs:
           import json, os
           from pathlib import Path
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              for filename in ('status.json',):
+              for filename in ('status.json', 'close-status.json'):
                   path = Path('.marketcap-data/ticker-v2') / filename
                   status = json.loads(path.read_text()) if path.exists() else {'state': 'error'}
                   summary.write(f'## {filename}\n\n')
@@ -103,6 +109,7 @@ jobs:
           import json, os
           from pathlib import Path
           data = json.loads(Path('web/dist/data/index.json').read_text())
+          assert data['is_demo'] is False, 'Refusing to publish fictional test data'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f"publication_id={data['publication_id']}\n")
           PY
