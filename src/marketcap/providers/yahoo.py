@@ -8,15 +8,20 @@ import csv
 import hashlib
 import io
 import json
+import random
 import re
 import time
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, localcontext
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import yfinance as yf
 from curl_cffi import requests
+from curl_cffi.const import CurlECode
+from curl_cffi.requests.exceptions import ConnectionError, SSLError, Timeout
+from yfinance.config import YfConfig
 
 from marketcap.calendar import NEW_YORK, latest_completed, regular_session_open, sessions
 from marketcap.models import DataError, Settings, positive
@@ -61,6 +66,9 @@ class RequestBudget:
         self.calls = 0
         self.last = 0.0
         self.stop_reason = None
+        self.network_retries = settings.network_retries
+        self.network_retry_limit = settings.max_network_retries_per_run
+        self.network_retries_used = 0
 
     def acquire(self):
         if self.stop_reason:
@@ -79,13 +87,75 @@ class BudgetSession(requests.Session):
         self.budget = budget
 
     def request(self, method, url, *args, **kwargs):
-        self.budget.acquire()
-        kwargs.setdefault("timeout", 25)
-        response = super().request(method, url, *args, **kwargs)
-        if response.status_code == 429:
-            self.budget.stop_reason = "Yahoo rate limit reached; stopping without rapid retries"
-            raise DataError(self.budget.stop_reason)
-        return response
+        # Restrict replay to Yahoo's read-only endpoints, including screener POSTs.
+        parsed = urlsplit(url)
+        endpoint = f"{parsed.hostname}{parsed.path}"
+        read_only = method.upper() == "GET" or (
+            method.upper() == "POST"
+            and parsed.hostname in {"query1.finance.yahoo.com", "query2.finance.yahoo.com"}
+            and parsed.path == "/v1/finance/screener"
+        )
+        kwargs["timeout"] = 30
+        for attempt in range(self.budget.network_retries + 1):
+            self.budget.acquire()
+            started = time.monotonic()
+            try:
+                response = super().request(method, url, *args, **kwargs)
+            except (Timeout, ConnectionError) as exc:
+                transient = isinstance(exc, Timeout) or (
+                    not isinstance(exc, SSLError)
+                    and exc.code
+                    in {
+                        0,
+                        CurlECode.COULDNT_RESOLVE_HOST,
+                        CurlECode.COULDNT_CONNECT,
+                        CurlECode.GOT_NOTHING,
+                        CurlECode.SEND_ERROR,
+                        CurlECode.RECV_ERROR,
+                    }
+                )
+                if not transient or not read_only:
+                    raise
+                elapsed = time.monotonic() - started
+                exhausted = (
+                    attempt == self.budget.network_retries
+                    or self.budget.network_retries_used >= self.budget.network_retry_limit
+                )
+                if exhausted:
+                    print(
+                        f"Yahoo request failed: {method} {endpoint}; {type(exc).__name__}; "
+                        f"elapsed={elapsed:.1f}s; attempts={attempt + 1}; retry limit reached",
+                        flush=True,
+                    )
+                    raise DataError(
+                        f"Yahoo request failed: {type(exc).__name__} at {endpoint}; "
+                        f"retry limit reached after {attempt + 1} attempts"
+                    ) from None
+                # No extra request or backoff once the shared budget has stopped.
+                if self.budget.stop_reason or self.budget.calls >= self.budget.limit:
+                    self.budget.stop_reason = self.budget.stop_reason or (
+                        "Public data request budget exhausted; no further requests sent"
+                    )
+                    raise DataError(self.budget.stop_reason) from None
+                delay = min(15, 5 * (3**attempt)) + random.uniform(0, 1)
+                print(
+                    f"Yahoo request retry: {method} {endpoint}; {type(exc).__name__}; "
+                    f"elapsed={elapsed:.1f}s; attempt={attempt + 1}; wait={delay:.1f}s",
+                    flush=True,
+                )
+                time.sleep(delay)
+                self.budget.network_retries_used += 1
+                continue
+            if response.status_code == 429:
+                self.budget.stop_reason = "Yahoo rate limit reached; stopping without rapid retries"
+                raise DataError(self.budget.stop_reason)
+            if attempt and response.status_code < 400:
+                print(
+                    f"Yahoo request recovered: {method} {endpoint}; "
+                    f"status={response.status_code}; attempts={attempt + 1}",
+                    flush=True,
+                )
+            return response
 
 
 def listing_rows(text: str, nasdaq: bool, reference: dict | None = None) -> dict[str, dict]:
@@ -253,6 +323,8 @@ class YahooProvider:
 
     def __init__(self, settings: Settings, root: Path):
         self.settings = settings
+        # The shared session owns retries and pacing; avoid multiplying attempts.
+        YfConfig.network.retries = 0
         self.root = root
         self.budget = RequestBudget(settings)
         self.session = BudgetSession(self.budget)
@@ -308,8 +380,10 @@ class YahooProvider:
             )
         except DataError:
             raise
-        except Exception:
-            raise DataError("Yahoo batch request failed; retry later") from None
+        except Exception as exc:
+            raise DataError(
+                f"Yahoo batch request failed: {type(exc).__name__}; retry later"
+            ) from None
         if not isinstance(result, dict) or not isinstance(result.get("quotes"), list):
             raise DataError("Yahoo screener schema is unavailable")
         return result

@@ -14,6 +14,8 @@
   "requests_per_minute": 20,
   "max_requests_per_run": 180,
   "max_retries": 3,
+  "network_retries": 2,
+  "max_network_retries_per_run": 10,
   "minimum_instruments": 1000,
   "minimum_universe_ratio": 0.9,
   "minimum_quote_coverage": 0.98,

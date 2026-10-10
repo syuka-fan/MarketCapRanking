@@ -25,6 +25,8 @@ class Settings:
     requests_per_minute: int = 20
     max_requests_per_run: int = 180
     max_retries: int = 3
+    network_retries: int = 2
+    max_network_retries_per_run: int = 10
     minimum_instruments: int = 1000
     minimum_universe_ratio: float = 0.9
     minimum_quote_coverage: float = 0.98
@@ -43,6 +45,10 @@ class Settings:
             result.requests_per_minute <= 0
             or result.max_requests_per_run < 1
             or not 0 <= result.max_retries <= 8
+            or type(result.network_retries) is not int
+            or not 0 <= result.network_retries <= 8
+            or type(result.max_network_retries_per_run) is not int
+            or not 0 <= result.max_network_retries_per_run <= 180
         ):
             raise DataError("Invalid request limit or retry count")
         if result.minimum_instruments < 1 or not 0 < result.minimum_universe_ratio <= 1:
@@ -66,7 +72,14 @@ class Settings:
                 {
                     k: v
                     for k, v in values.items()
-                    if k not in ("requests_per_minute", "max_requests_per_run", "max_retries")
+                    if k
+                    not in (
+                        "requests_per_minute",
+                        "max_requests_per_run",
+                        "max_retries",
+                        "network_retries",
+                        "max_network_retries_per_run",
+                    )
                 }
             )
         )
